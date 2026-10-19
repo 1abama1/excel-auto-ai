@@ -1,0 +1,27 @@
+[
+  {
+    "id": "kg_id",
+    "name": "Кыргызстан · ID / паспорт",
+    "signatures": ["KYRGYZ", "КЫРГЫЗ", "КЫРГЫЗСТАН", "PASSPORT", "ПАСПОРТ", "IDENTITY", "УДОСТОВЕРЕНИЕ", "ИДЕНТИФИКАЦИЯЛЫК"],
+    "minimum_signatures": 2,
+    "expected_fields": ["surname", "first_name", "birth_date", "personal_identifier", "passport_number"],
+    "regions": {},
+    "formats": {"personal_identifier": "[0-9]{14}"},
+    "strategy": "label-spatial",
+    "aliases": {
+      "passport_number": ["ДОКУМЕНТТИК №", "№ ДОКУМЕНТА", "ДОКУМЕНТТИН НОМЕРИ", "НОМЕР ДОКУМЕНТА", "НОМЕР ПАСПОРТА", "DOCUMENT NO", "DOCUMENT NUMBER", "PASSPORT NO"],
+      "personal_identifier": ["ЖЕКЕ НОМЕРУ", "ЖЕКЕ НОМЕРИ", "ЖЕКЕ ИДЕНТИФИКАЦИЯЛЫК НОМЕР", "ПЕРСОНАЛЬНЫЙ НОМЕР", "ПИН", "ИНН", "PIN", "PERSONAL NUMBER", "PERSONAL NO", "PERSONAL IDENTIFICATION NUMBER"],
+      "registration_address": ["КАТТАЛГАН ЖЕРИ", "КАТТОО ДАРЕГИ", "ТУРУКТУУ ЖАШАГАН ЖЕРИ", "АДРЕС ПРОПИСКИ", "АДРЕС РЕГИСТРАЦИИ", "МЕСТО РЕГИСТРАЦИИ", "ПРОПИСКА", "РЕГИСТРАЦИЯ", "REGISTRATION ADDRESS"]
+    }
+  },
+  {
+    "id": "registration",
+    "name": "Регистрация",
+    "signatures": ["РЕГИСТРАЦ", "ПРОПИСК", "АДРЕС", "ОБЛАСТ", "УЛИЦ", "КАТТАЛГАН", "ДАРЕГИ", "ОБЛУСУ", "КӨЧӨСҮ"],
+    "minimum_signatures": 2,
+    "expected_fields": ["registration_address"],
+    "regions": {},
+    "formats": {},
+    "strategy": "label-spatial"
+  }
+]

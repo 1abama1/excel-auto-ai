@@ -1,0 +1,45 @@
+# Local Python environments and caches
+.venv*/
+.uv-cache/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.egg-info/
+.pyinstaller-cache/
+
+# Generated releases, downloaded models and external runtimes
+/build/
+/dist/
+/dist-*/
+/models/
+/tools/
+/current-build*.txt
+
+# Private documents, OCR results and local verification artifacts
+/local-data/
+/test-artifacts/
+/assets/*
+!/assets/README.md
+
+# Local credentials and editor/OS files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.log
+*.tmp
+*.bak
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
+.DS_Store

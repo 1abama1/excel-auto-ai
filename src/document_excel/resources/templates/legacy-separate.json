@@ -1,0 +1,195 @@
+{
+  "id": "legacy-separate",
+  "name": "Карта из задания · separate",
+  "version": "1",
+  "required_sheets": [
+    "Дог."
+  ],
+  "optional_sheets": [
+    "Акт расч",
+    "Акт прием",
+    "Акт приема",
+    "Акт прием-передач",
+    "Акт приема-передачи",
+    "Акт прием-передачи"
+  ],
+  "field_mappings": [
+    {
+      "field": "tool_full_name",
+      "sheet": "Дог.",
+      "cell": "A12",
+      "value_type": "text",
+      "allow_formula_replace": false,
+      "skip_empty": true
+    },
+    {
+      "field": "full_name",
+      "sheet": "Дог.",
+      "cell": "A18",
+      "value_type": "text",
+      "allow_formula_replace": false,
+      "skip_empty": true
+    },
+    {
+      "field": "passport_type",
+      "sheet": "Дог.",
+      "cell": "E19",
+      "value_type": "text",
+      "allow_formula_replace": false,
+      "skip_empty": true
+    },
+    {
+      "field": "passport_number",
+      "sheet": "Дог.",
+      "cell": "G19",
+      "value_type": "text",
+      "allow_formula_replace": false,
+      "skip_empty": true
+    },
+    {
+      "field": "passport_issued_by",
+      "sheet": "Дог.",
+      "cell": "J19",
+      "value_type": "text",
+      "allow_formula_replace": false,
+      "skip_empty": true
+    },
+    {
+      "field": "passport_department_code",
+      "sheet": "Дог.",
+      "cell": "K19",
+      "value_type": "text",
+      "allow_formula_replace": false,
+      "skip_empty": true
+    },
+    {
+      "field": "passport_issued_date",
+      "sheet": "Дог.",
+      "cell": "M19",
+      "value_type": "text",
+      "allow_formula_replace": false,
+      "skip_empty": true
+    },
+    {
+      "field": "registration_address.region",
+      "sheet": "Дог.",
+      "cell": "C20",
+      "value_type": "text",
+      "allow_formula_replace": false,
+      "skip_empty": true
+    },
+    {
+      "field": "registration_address.street",
+      "sheet": "Дог.",
+      "cell": "J20",
+      "value_type": "text",
+      "allow_formula_replace": false,
+      "skip_empty": true
+    },
+    {
+      "field": "living_address.region",
+      "sheet": "Дог.",
+      "cell": "A21",
+      "value_type": "text",
+      "allow_formula_replace": false,
+      "skip_empty": true
+    },
+    {
+      "field": "living_address.street",
+      "sheet": "Дог.",
+      "cell": "I21",
+      "value_type": "text",
+      "allow_formula_replace": false,
+      "skip_empty": true
+    },
+    {
+      "field": "personal_identifier",
+      "sheet": "Дог.",
+      "cell": "C22",
+      "value_type": "text",
+      "allow_formula_replace": false,
+      "skip_empty": true
+    },
+    {
+      "field": "birth_date",
+      "sheet": "Дог.",
+      "cell": "A23",
+      "value_type": "text",
+      "allow_formula_replace": false,
+      "skip_empty": true
+    },
+    {
+      "field": "object_address",
+      "sheet": "Дог.",
+      "cell": "K22",
+      "value_type": "text",
+      "allow_formula_replace": false,
+      "skip_empty": true
+    },
+    {
+      "field": "whatsapp_phone",
+      "sheet": "Дог.",
+      "cell": "D7",
+      "value_type": "text",
+      "allow_formula_replace": false,
+      "skip_empty": true
+    },
+    {
+      "field": "additional_phone",
+      "sheet": "Дог.",
+      "cell": "G7",
+      "value_type": "text",
+      "allow_formula_replace": false,
+      "skip_empty": true
+    },
+    {
+      "field": "actual_return_date",
+      "sheet": "Акт расч",
+      "cell": "G21",
+      "value_type": "date",
+      "allow_formula_replace": false,
+      "skip_empty": true
+    },
+    {
+      "field": "actual_return_time",
+      "sheet": "Акт расч",
+      "cell": "G20",
+      "value_type": "text",
+      "allow_formula_replace": false,
+      "skip_empty": true
+    },
+    {
+      "field": "purchase_price",
+      "sheet": "Акт расч",
+      "cell": "N21",
+      "value_type": "number",
+      "allow_formula_replace": false,
+      "skip_empty": true
+    }
+  ],
+  "required_fields": [
+    "full_name",
+    "personal_identifier",
+    "passport_number",
+    "registration_address"
+  ],
+  "pin_length": 14,
+  "phone_mode": "separate",
+  "allow_missing_registration": false,
+  "identifier_label": "ПИН / ИНН",
+  "tool_sheet": "Пр №1",
+  "tool_first_row": 20,
+  "tools_per_page": 5,
+  "tool_row_step": 1,
+  "tool_inventory_column": "K",
+  "tool_name_formula_replace": false,
+  "tool_linked_sheets": [],
+  "tool_inventory_sheet": null,
+  "tool_inventory_first_row": 21,
+  "tool_inventory_target_column": "L",
+  "enable_return_formula": false,
+  "acceptance_sheet": null,
+  "photo_sheet": null,
+  "photos_required": false,
+  "allow_photo_exception": false
+}
