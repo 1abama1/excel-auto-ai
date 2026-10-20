@@ -120,15 +120,18 @@ def test_digital_pending_result_keeps_review_visible_after_finished_signal(
     qtbot.wait(30)
     assert window.current_case.pending_identity and not window.current_case.data.full_name
     assert window.current_step == 2 and window.review_form.isVisible()
-    assert window.review_form.fields["full_name"].editor.text() == "СИНТЕТИКОВ ПРИМЕР ТЕСТОВИЧ"
+    assert window.review_form.fields["full_name"].editor.text() == "Синтетиков Пример Тестович"
     assert window.review_form.fields["surname"].editor.isReadOnly()
 
 
 @pytest.mark.parametrize("legacy_auto_ocr", [False, True])
 def test_import_waits_for_recognize_button_even_with_legacy_auto_ocr(
-    window, qtbot, image_factory, monkeypatch, legacy_auto_ocr
+    window, qtbot, image_factory, monkeypatch, legacy_auto_ocr, template
 ):
     window.settings.auto_ocr = legacy_auto_ocr
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *args: (str(template), ""))
+    window.excel_actions.choose_template()
+    qtbot.waitUntil(lambda: not window.background_workers, timeout=10000)
     calls = []
     monkeypatch.setattr(window.case_actions, "start_ocr", lambda *args: calls.append(True))
     for path in (image_factory(name="front.png"), image_factory(lines=["SYNTHETIC BACK"], name="back.png")):

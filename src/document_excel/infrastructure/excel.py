@@ -18,13 +18,14 @@ from openpyxl.utils.cell import coordinate_to_tuple
 from openpyxl.worksheet.print_settings import PrintArea
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from document_excel.domain.errors import AppError
+from document_excel.domain.errors import AppError, OutputExistsError
 from document_excel.domain.models import (
     FIELD_LABELS,
     ClientCase,
     ContractData,
     FieldStatus,
     RegistrationStatus,
+    WorkflowMode,
     data_value,
     validate_field,
 )
@@ -83,6 +84,7 @@ class TemplateProfile(BaseModel):
     id: str = "custom"
     name: str = "Собственный профиль"
     version: str = "1"
+    structure_digest: str = ""
     required_sheets: list[str] = Field(default_factory=lambda: ["Дог."])
     optional_sheets: list[str] = Field(default_factory=list)
     field_mappings: list[CellMapping] = Field(default_factory=list)
@@ -247,9 +249,28 @@ class TemplateRegistry:
         except (OSError, ValueError) as exc:
             raise AppError("Профиль mapping некорректен. Проверьте поля, ячейки и телефонный режим.") from exc
 
+    def matching(self, book) -> TemplateProfile | None:
+        for path in sorted(self.root.glob("profile-*.json")):
+            try:
+                profile = self.load(path)
+                if profile.structure_digest and profile.structure_digest == workbook_structure(book, profile):
+                    return profile
+            except AppError:
+                continue
+        return None
+
 
 def readiness(case: ClientCase, profile: TemplateProfile, require_confirmation: bool = True) -> list[str]:
     errors = []
+    if (
+        case.workflow_mode == WorkflowMode.EXISTING_CONTRACT
+        and case.data.full_name
+        and (
+            not re.search(r"[А-Яа-яЁёҮүӨөҢң]", case.data.full_name)
+            or not re.fullmatch(r"[^\W\d_]+(?:[ '\u2019-][^\W\d_]+)*", " ".join(case.data.full_name.split()))
+        )
+    ):
+        errors.append("Для договора укажите подтверждённое ФИО на кириллице.")
     if case.side_proposals:
         errors.append("Проверьте определённые стороны документа перед сохранением фотографий.")
     for name in profile.required_fields:
@@ -309,6 +330,8 @@ def readiness(case: ClientCase, profile: TemplateProfile, require_confirmation: 
 class ExcelDataAssembler:
     def assemble(self, case: ClientCase) -> dict[str, Any]:
         result: dict[str, Any] = {name: getattr(case.data, name) for name in BASE_FIELDS}
+        if case.workflow_mode == WorkflowMode.EXISTING_CONTRACT:
+            result["full_name"] = case.formatted_name
         for prefix in ("registration_address", "living_address"):
             address = getattr(case.data, prefix)
             result[prefix] = address.display()
@@ -334,6 +357,7 @@ class Change:
     source: str
     warning: str = ""
     formula: bool = False
+    field_name: str = ""
 
 
 @dataclass
@@ -346,6 +370,95 @@ class ExportPlan:
     new_sheets: list[tuple[str, str]] = field(default_factory=list)
     photos: PhotoExportPlan | None = None
     image_replace_confirmed: bool = False
+    existing_contract: bool = False
+    identity_conflict: bool = False
+    missing_personal: list[str] = field(default_factory=list)
+    preserved: list[Change] = field(default_factory=list)
+    clear_missing_confirmed: bool = False
+    preserved_confirmed: bool = False
+    clear_contacts_confirmed: bool = False
+
+    def clear_preserved_contacts(self) -> None:
+        if self.clear_contacts_confirmed:
+            return
+        cleared = set()
+        for item in self.preserved:
+            if item.field_name in CONDITIONAL_FIELDS and not (
+                isinstance(item.old, str) and item.old.startswith("=")
+            ):
+                self.changes.append(
+                    Change(
+                        item.sheet,
+                        item.cell,
+                        item.old,
+                        None,
+                        "явная очистка контактов",
+                        field_name=item.field_name,
+                    )
+                )
+                cleared.add((item.sheet, item.cell))
+        self.preserved = [item for item in self.preserved if (item.sheet, item.cell) not in cleared]
+        self.clear_contacts_confirmed = True
+
+
+PERSONAL_FIELDS = {
+    "full_name",
+    "surname",
+    "first_name",
+    "patronymic",
+    "surname_cyrillic",
+    "surname_latin",
+    "first_name_cyrillic",
+    "first_name_latin",
+    "patronymic_cyrillic",
+    "birth_date",
+    "personal_identifier",
+    "passport_type",
+    "passport_number",
+    "passport_issued_by",
+    "passport_department_code",
+    "passport_issued_date",
+    "registration_address",
+    "place_of_birth",
+    "gender",
+    "citizenship",
+    "expiration_date",
+} | {f"registration_address.{part}" for part in ("region", "street", "full")}
+CONDITIONAL_FIELDS = {"phones", "whatsapp_phone", "additional_phone", "living_address", "object_address"} | {
+    f"living_address.{part}" for part in ("region", "street", "full")
+}
+EXISTING_FIELDS = PERSONAL_FIELDS | CONDITIONAL_FIELDS
+
+
+def workbook_structure(book, profile: TemplateProfile) -> str:
+    """Conservative custom-map identity: layout AND the untouched contract.
+
+    Personal values may change. A changed label, formula, style, price or tool
+    outside the client mapping requires reviewing the saved map again.
+    Dimensions/merges alone cannot distinguish unrelated contracts.
+    """
+    targets = {(m.sheet, m.cell) for m in profile.field_mappings if m.field in EXISTING_FIELDS}
+    layout = [
+        (
+            sheet.title,
+            sheet.max_row,
+            sheet.max_column,
+            sorted(str(m) for m in sheet.merged_cells.ranges),
+            sorted(
+                (cell.coordinate, repr(cell.value), str(cell._style), cell.data_type)
+                for cell in sheet._cells.values()
+                if (cell.value is not None or cell.has_style)
+                and (sheet.title, cell.coordinate) not in targets
+            ),
+            sorted(
+                (address, str(getattr(sheet._cells.get(coordinate_to_tuple(address)), "_style", None)))
+                for name, address in targets
+                if name == sheet.title
+            ),
+        )
+        for sheet in book
+    ]
+    return hashlib.sha256(repr(layout).encode()).hexdigest()
 
 
 def file_hash(path: Path) -> str:
@@ -417,7 +530,14 @@ def open_workbook(path: Path):
 
 
 class WorkbookService:
-    def describe(self, path: Path, current: TemplateProfile) -> tuple[list[str], TemplateProfile]:
+    def describe(
+        self,
+        path: Path,
+        current: TemplateProfile,
+        *,
+        strict: bool = False,
+        registry: TemplateRegistry | None = None,
+    ) -> tuple[list[str], TemplateProfile]:
         book = open_workbook(path)
         try:
             recognized = (
@@ -437,9 +557,49 @@ class WorkbookService:
                 }
             )
             presets = [legacy_profile("combined"), legacy_profile("separate"), lermontov_profile(), previous]
+            if strict:
+                if recognized:
+                    return book.sheetnames, lermontov_profile()
+                if current.structure_digest and current.structure_digest == workbook_structure(book, current):
+                    return book.sheetnames, current
+                saved = registry.matching(book) if registry else None
+                if saved:
+                    return book.sheetnames, saved
+                demo = (
+                    all(
+                        name in book.sheetnames
+                        and book[name]["A1"].value == "ДЕМОНСТРАЦИОННЫЙ ШАБЛОН — НЕ ДОГОВОР"
+                        for name in ("Дог.", "Пр №1", "Акт расч", "Акт прием")
+                    )
+                    and "Карта полей" in book.sheetnames
+                )
+                if demo:
+                    selected = legacy_profile(current.phone_mode)
+                    for mapping in selected.field_mappings:
+                        if mapping.field in {"birth_date", "passport_issued_date"}:
+                            mapping.value_type = "date"
+                    if "Пасп Доп Данные" in book.sheetnames:
+                        selected.photo_sheet = "Пасп Доп Данные"
+                        selected.photos_required = True
+                        selected.allow_photo_exception = True
+                    return book.sheetnames, selected
+                return book.sheetnames, TemplateProfile(id="unmapped", tool_sheet=None, field_mappings=[])
             if current in presets:
                 current = lermontov_profile() if recognized else legacy_profile(current.phone_mode)
             return book.sheetnames, current
+        finally:
+            book.close()
+
+    def bind_profile(self, path: Path, profile: TemplateProfile) -> TemplateProfile:
+        book = open_workbook(path)
+        try:
+            for mapping in profile.field_mappings:
+                if mapping.sheet not in book.sheetnames:
+                    if mapping.sheet in profile.optional_sheets:
+                        continue
+                    raise AppError(f"Не найден лист «{mapping.sheet}» из mapping.")
+                self._change(book[mapping.sheet], mapping.cell, None, "проверка расположения", True)
+            return profile.model_copy(update={"structure_digest": workbook_structure(book, profile)})
         finally:
             book.close()
 
@@ -483,6 +643,12 @@ class WorkbookService:
         if problems:
             raise AppError("Экспорт пока невозможен:\n" + "\n".join(problems))
         source = source.resolve()
+        if (
+            case.workflow_mode == WorkflowMode.EXISTING_CONTRACT
+            and case.template_path
+            and source != case.template_path.resolve()
+        ):
+            raise AppError("Выбран другой исходный договор. Повторите выбор файла и подтверждение.")
         initial_hash = file_hash(source)
         book = open_workbook(source)
         changes: list[Change] = []
@@ -492,6 +658,8 @@ class WorkbookService:
                 if sheet not in book.sheetnames:
                     raise AppError(f"В шаблоне отсутствует обязательный лист «{sheet}».")
             assembled = ExcelDataAssembler().assemble(case)
+            if case.workflow_mode == WorkflowMode.EXISTING_CONTRACT:
+                return self._existing_plan(source, initial_hash, book, case, profile, assembled)
             for mapping in profile.field_mappings:
                 if mapping.sheet not in book.sheetnames:
                     if mapping.sheet in profile.optional_sheets:
@@ -573,6 +741,104 @@ class WorkbookService:
             )
         finally:
             book.close()
+
+    def _existing_plan(self, source, initial_hash, book, case, profile, assembled) -> ExportPlan:
+        _, verified = self.describe(source, profile, strict=True)
+        if not verified.field_mappings:
+            raise AppError(
+                "Структура договора неизвестна. В разделе «Дополнительно» подтвердите расположение полей один раз."
+            )
+        if case.workbook_profile is not None and case.workbook_profile != profile.model_dump(mode="json"):
+            raise AppError("Профиль выбранного договора изменился. Повторите выбор и подтверждение.")
+        trusted = {(m.field, m.sheet, m.cell) for m in verified.field_mappings if m.field in EXISTING_FIELDS}
+        if profile.photo_sheet != verified.photo_sheet:
+            raise AppError("Лист фотографий не соответствует проверенному профилю договора.")
+        mappings = [m for m in profile.field_mappings if m.field in EXISTING_FIELDS]
+        if not {"full_name", "personal_identifier", "passport_number"} <= {m.field for m in mappings}:
+            raise AppError("В профиле должны быть проверенные ячейки ФИО, ПИН и номера документа.")
+        for mapping in mappings:
+            if (mapping.field, mapping.sheet, mapping.cell) not in trusted:
+                raise AppError("Обнаружена неразрешённая ячейка. Проверьте расположение полей договора.")
+
+        # Name comparisons ignore case, whitespace and punctuation, not letters/digits.
+        def identity(value):
+            return re.sub(r"\W", "", str(value or "")).casefold()
+
+        conflict = any(
+            m.field in {"full_name", "personal_identifier", "passport_number"}
+            and book[m.sheet][m.cell].data_type != "f"
+            and book[m.sheet][m.cell].value not in (None, "")
+            and assembled.get(m.field) not in (None, "")
+            and identity(book[m.sheet][m.cell].value) != identity(assembled[m.field])
+            for m in mappings
+            if m.sheet in book.sheetnames
+        )
+        changes, preserved, missing = [], [], []
+        for mapping in mappings:
+            if mapping.sheet not in book.sheetnames:
+                if mapping.sheet in profile.optional_sheets:
+                    continue
+                raise AppError(f"Не найден лист «{mapping.sheet}» из mapping.")
+            cell = book[mapping.sheet][mapping.cell]
+            value = assembled.get(mapping.field)
+            empty = value in (None, "")
+            clear = empty and conflict and mapping.field in PERSONAL_FIELDS and cell.value not in (None, "")
+            label = FIELD_LABELS.get(mapping.field.split(".")[0], "Телефоны")
+            if empty and not clear:
+                if cell.value not in (None, ""):
+                    preserved.append(
+                        Change(
+                            mapping.sheet,
+                            mapping.cell,
+                            cell.value,
+                            cell.value,
+                            label,
+                            field_name=mapping.field,
+                        )
+                    )
+                continue
+            # Formula permissions from the template generator do not grant
+            # permission in the ordinary existing-contract workflow.
+            change = self._change(
+                book[mapping.sheet],
+                mapping.cell,
+                self._typed_value(
+                    value,
+                    "text"
+                    if mapping.field
+                    in {"personal_identifier", "passport_type", "passport_number", "passport_department_code"}
+                    else mapping.value_type,
+                ),
+                label,
+                False,
+            )
+            change.field_name = mapping.field
+            if clear:
+                change.warning = (
+                    "Старое персональное значение будет очищено только после явного подтверждения"
+                )
+                missing.append(label)
+            if change.old != change.new:
+                changes.append(change)
+        if not changes:
+            # A repeat save can still replace the client's photographs.
+            if not profile.photo_sheet:
+                raise AppError("Нет изменений данных клиента для сохранения.")
+        photos = ExcelImageEmbedder().plan(PackageEditor(source), book, case, profile)
+        if file_hash(source) != initial_hash:
+            raise AppError("Исходный Excel изменился во время чтения. Повторите предпросмотр.")
+        return ExportPlan(
+            source,
+            initial_hash,
+            case.digest(),
+            profile_hash(profile),
+            changes,
+            photos=photos,
+            existing_contract=True,
+            identity_conflict=conflict,
+            missing_personal=missing,
+            preserved=preserved,
+        )
 
     @staticmethod
     def _typed_value(value: Any, kind: str) -> Any:
@@ -709,9 +975,33 @@ class WorkbookService:
         if destination == plan.source:
             raise AppError("Выберите новый файл. Исходный Excel не перезаписывается.")
         if destination.exists():
-            raise AppError("Файл уже существует. Выберите другое имя; перезапись отключена.")
+            raise OutputExistsError("Файл уже существует. Выберите другое имя; перезапись отключена.")
         if file_hash(plan.source) != plan.source_hash:
             raise AppError("Исходный Excel изменился. Повторите предпросмотр.")
+        if case.workflow_mode == WorkflowMode.EXISTING_CONTRACT:
+            expected = self.plan(plan.source, case, profile)
+            if plan.clear_contacts_confirmed:
+                expected.clear_preserved_contacts()
+            if (
+                not plan.existing_contract
+                or plan.changes != expected.changes
+                or plan.new_sheets
+                or plan.photos != expected.photos
+                or plan.missing_personal != expected.missing_personal
+                or plan.preserved != expected.preserved
+                or plan.identity_conflict != expected.identity_conflict
+            ):
+                raise AppError(
+                    "Обнаружено неожиданное изменение: разрешены только проверенные поля клиента и фотографии."
+                )
+            if plan.missing_personal and not plan.clear_missing_confirmed:
+                raise AppError(
+                    "Договор содержит данные другого клиента. Заполните отсутствующие поля или явно подтвердите их очистку."
+                )
+            if plan.preserved and not plan.preserved_confirmed:
+                raise AppError(
+                    "Проверьте сохраняемые значения исходного договора и подтвердите их принадлежность текущему клиенту."
+                )
         book = open_workbook(plan.source)
         temporary: Path | None = None
         try:
@@ -730,6 +1020,8 @@ class WorkbookService:
             untouched = self._snapshot(book, allowed)
             for sheet in dict.fromkeys(c.sheet for c in plan.changes):
                 editor.cells(sheet, [c for c in plan.changes if c.sheet == sheet], book)
+            if plan.existing_contract:
+                editor.scrub_personal_shared_strings()
             if plan.photos is not None:
                 ExcelImageEmbedder().apply(editor, plan.photos, plan.image_replace_confirmed)
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -769,6 +1061,10 @@ class WorkbookService:
             return destination
         except AppError:
             raise
+        except FileExistsError as exc:
+            raise OutputExistsError(
+                "Файл уже существует. Выберите другое имя или сохраните с дополнительным номером."
+            ) from exc
         except OSError as exc:
             raise AppError(
                 "Не удалось сохранить Excel. Проверьте свободное место, права и имя файла. Для атомарного сохранения используйте локальный диск NTFS / ext4."

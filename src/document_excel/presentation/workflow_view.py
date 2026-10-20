@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from document_excel.domain.models import DocumentSide
 from document_excel.presentation.components import (
     DocumentCard,
     EmptyState,
@@ -165,7 +166,7 @@ def _workflow(w) -> None:
         "Как подготовить договор",
         lambda: w.message(
             "Добавьте обе стороны документа, распознайте текст и проверьте данные. "
-            "Затем выберите Excel-шаблон и сохраните готовый договор."
+            "Сначала выберите готовый договор Excel. После проверки данных создайте новую копию."
         ),
     )
     help_menu.addAction("Диагностика OCR", w.show_diagnostics)
@@ -196,7 +197,7 @@ def _workflow(w) -> None:
     footer_row.addWidget(w.back_button)
     w.footer_note = _label("Шаг 1 из 5 · Добавьте фотографии", "caption", True)
     footer_row.addWidget(w.footer_note, 1)
-    w.primary_button = PrimaryButton("Распознать документы", w.primary_action)
+    w.primary_button = PrimaryButton("Распознать паспорт", w.primary_action)
     w.primary_button.setMinimumWidth(214)
     footer_row.addWidget(w.primary_button)
     box.addWidget(footer)
@@ -204,13 +205,42 @@ def _workflow(w) -> None:
 
 
 def _upload(w) -> None:
-    page = QWidget()
-    box = QVBoxLayout(page)
+    page = QScrollArea()
+    page.setWidgetResizable(True)
+    page.setFrameShape(QFrame.Shape.NoFrame)
+    page.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    content = QWidget()
+    page.setWidget(content)
+    box = QVBoxLayout(content)
     box.setContentsMargins(0, 0, 0, 0)
     box.setSpacing(16)
-    w.dropzone = EmptyState(
-        "Добавьте фотографии документа", "Перетащите изображения сюда или выберите их на компьютере"
+    contract = DocumentCard("Договор Excel")
+    contract.box.setContentsMargins(18, 12, 18, 12)
+    contract.box.setSpacing(6)
+    w.contract_name = _label("Выберите договор Excel", "templateName", True)
+    w.contract_status = _label("", "caption", True)
+    contract.box.addWidget(w.contract_name)
+    contract.box.addWidget(w.contract_status)
+    row = QHBoxLayout()
+    w.contract_button = SecondaryButton(
+        "Выбрать / заменить договор", w.excel_actions.choose_template, "folder"
     )
+    row.addWidget(w.contract_button)
+    advanced = SecondaryButton("Дополнительно")
+    menu = QMenu(advanced)
+    menu.addAction("Расположение полей", w.excel_actions.edit_mapping)
+    menu.addAction("Заполнение шаблона с инструментами", w.excel_actions.template_generation)
+    menu.addAction("Обновление готового договора", w.excel_actions.existing_mode)
+    advanced.setMenu(menu)
+    row.addWidget(advanced)
+    row.addStretch()
+    contract.box.addLayout(row)
+    box.addWidget(contract)
+    w.dropzone = EmptyState(
+        "Паспорт клиента", "Добавьте лицевую и оборотную стороны или перетащите обе фотографии сюда"
+    )
+    w.dropzone.layout().setContentsMargins(16, 12, 16, 12)
+    w.dropzone.illustration.hide()
     w.dropzone.files_dropped.connect(w.case_actions.add_images)
     w.add_button = SecondaryButton("Выбрать фотографии", w.case_actions.choose_images, "plus")
     w.add_button.setToolTip("Открыть фотографии · Ctrl+O")
@@ -219,11 +249,38 @@ def _upload(w) -> None:
     w.camera_button = SecondaryButton("Сделать фото", w.case_actions.capture_documents)
     w.dropzone.actions.addWidget(w.camera_button)
     w.dropzone.actions.addWidget(w.folder_button)
+    for button in (w.add_button, w.camera_button, w.folder_button):
+        button.hide()
+    for side, title in ((DocumentSide.FRONT, "Лицевая сторона"), (DocumentSide.BACK, "Оборотная сторона")):
+        card = DocumentCard(title)
+        card.setProperty("documentSide", side.value)
+        card.setMinimumHeight(130)
+        card.box.setContentsMargins(12, 8, 12, 8)
+        card.box.setSpacing(6)
+        card.box.addWidget(
+            SecondaryButton(
+                "Загрузить фото",
+                lambda _checked=False, role=side: w.case_actions.choose_side_image(role),
+                "plus",
+            )
+        )
+        card.box.addWidget(
+            SecondaryButton(
+                "Сделать фото", lambda _checked=False, role=side: w.case_actions.capture_documents(role)
+            )
+        )
+        w.dropzone.actions.addWidget(card)
     w.formats_label = _label(
         "JPG, PNG, WEBP, BMP, TIFF · Можно добавить обе стороны удостоверения", "caption", True
     )
     w.formats_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
     w.dropzone.layout().addWidget(w.formats_label)
+    other = SecondaryButton("Другие фотографии и папка")
+    other_menu = QMenu(other)
+    other_menu.addAction("Добавить несколько фотографий", w.case_actions.choose_images)
+    other_menu.addAction("Добавить папку", w.case_actions.choose_folder)
+    other.setMenu(other_menu)
+    w.dropzone.layout().addWidget(other, 0, Qt.AlignmentFlag.AlignRight)
     box.addWidget(w.dropzone, 1)
     w.upload_summary = _label(
         "Лицевая и оборотная стороны одного человека — одна запись клиента", "caption", True
@@ -421,11 +478,13 @@ def _review(w) -> None:
     data_box.addWidget(w.review_form, 1)
     extras = QHBoxLayout()
     extras.setContentsMargins(20, 8, 20, 12)
-    extras.addWidget(SecondaryButton("Инструменты и договор", w.case_actions.contract_dialog))
     extras.addStretch()
     more = IconButton("more", "Дополнительные действия")
     menu = QMenu(more)
     menu.addAction("Исходный текст OCR", w.show_raw_ocr)
+    menu.addAction("Проверка машиночитаемой зоны", w.case_actions.show_mrz)
+    menu.addAction("Инструменты и договор", w.case_actions.contract_dialog)
+    menu.addAction("Проверить фотографии в договоре", lambda: w.go_step(3))
     menu.addAction("Распознать ещё раз", w.case_actions.start_ocr)
     menu.addAction("Сохранить копии фото", w.excel_actions.save_photos)
     more.setMenu(menu)
@@ -483,6 +542,7 @@ def _excel(w) -> None:
     w.mapping_table.setMinimumHeight(165)
     preview.box.addWidget(w.mapping_table, 1)
     box.addWidget(preview, 1)
+    preview.hide()  # Mapping remains available through the advanced editor.
     w.excel_warning = _label("", "fieldError", True)
     w.excel_warning.hide()
     box.addWidget(w.excel_warning)
@@ -663,4 +723,8 @@ def update_responsive(w, width: int) -> None:
         w.review_splitter.addWidget(w.viewer_panel)
         w.review_splitter.addWidget(w.data_panel)
         w.review_host_stack.setCurrentIndex(0)
+        # QTabWidget hides inactive pages. Reparenting them to the splitter
+        # does not undo that explicit hidden state after a compact layout.
+        w.viewer_panel.show()
+        w.data_panel.show()
         w.review_splitter.setSizes([640, 440])

@@ -2,6 +2,10 @@ class AppError(Exception):
     """An error whose message is safe to show in the user interface."""
 
 
+class OutputExistsError(AppError):
+    """An exclusive publication collided with another file."""
+
+
 class OcrFailure(AppError):
     def __init__(self, message, code, metrics):
         super().__init__(message)

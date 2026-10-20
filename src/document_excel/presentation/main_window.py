@@ -35,6 +35,7 @@ from document_excel.domain.models import (
     FieldEvidence,
     FieldStatus,
     RegistrationStatus,
+    WorkflowMode,
     data_value,
 )
 from document_excel.infrastructure.document_images import DocumentCaptureController
@@ -88,7 +89,9 @@ class MainWindow(QMainWindow):
         self.workbooks, self.case_service = WorkbookService(), CaseService()
         self.capture_controller = DocumentCaptureController(self.case_service)
         self.profile = legacy_profile()
-        self.batch = DocumentBatch(cases=[ClientCase(name="Клиент 1")])
+        self.batch = DocumentBatch(
+            cases=[ClientCase(name="Клиент 1", workflow_mode=WorkflowMode.EXISTING_CONTRACT)]
+        )
         self.current_case = self.batch.cases[0]
         self.active_worker: Worker | None = None
         self.background_workers: list[Worker] = []
@@ -155,18 +158,17 @@ class MainWindow(QMainWindow):
                 self.profile = self.registry.load(Path(self.settings.default_profile))
             except AppError as exc:
                 self.notice.setText(str(exc))
-        if self.settings.default_template and Path(self.settings.default_template).exists():
-            path = Path(self.settings.default_template)
-            self.current_case.template_path = path
 
-            def loaded(description):
-                sheets, profile = description
-                self.template_sheets[path] = sheets
-                if profile != self.profile:
-                    self.excel_actions.use_profile(profile)
-                self.refresh_form()
-
-            self.run_worker(lambda _c, _p: self.workbooks.describe(path, self.profile), loaded, busy=False)
+    def can_recognize(self):
+        case = self.current_case
+        if case.workflow_mode == WorkflowMode.EXISTING_CONTRACT:
+            return bool(
+                case.template_path
+                and case.workbook_profile
+                and case.workbook_profile.get("field_mappings")
+                and len(case.images) >= 2
+            )
+        return bool(case.images)
 
     def navigate(self, index):
         self.commit_edits()
@@ -197,7 +199,7 @@ class MainWindow(QMainWindow):
             button.setEnabled(not self.active_worker and i <= reached and i != 1)
         self.title_label.setText(
             [
-                "Добавьте документы",
+                "Создать договор по паспорту",
                 "Распознаём документ…",
                 "Проверьте данные",
                 "Подготовьте Excel",
@@ -206,7 +208,7 @@ class MainWindow(QMainWindow):
         )
         self.subtitle_label.setText(
             [
-                "Две стороны удостоверения — одна запись клиента",
+                "Выберите готовый договор и добавьте фотографии клиента",
                 "Обработка выполняется на этом компьютере",
                 "Сверьте значения с фотографиями и исправьте выделенные поля",
                 "Выберите шаблон и проверьте, куда попадут данные",
@@ -216,16 +218,14 @@ class MainWindow(QMainWindow):
         self.back_button.setVisible(index in (2, 3))
         self.primary_button.setText(
             [
-                "Распознать документы",
+                "Распознать паспорт",
                 "Отменить распознавание",
-                "Проверить и продолжить",
+                "Создать договор",
                 "Сохранить Excel",
                 "Новый клиент",
             ][index]
         )
-        self.primary_button.setEnabled(
-            not self.active_worker and (index != 0 or bool(self.current_case.images))
-        )
+        self.primary_button.setEnabled(not self.active_worker and (index != 0 or self.can_recognize()))
         if index == 1:
             self.primary_button.setEnabled(bool(self.active_worker))
         self.footer_note.setText(f"{self.current_case.name} · {len(self.current_case.images)} фото")
@@ -341,6 +341,10 @@ class MainWindow(QMainWindow):
         self.commit_edits()
         self.undo_stack.clear()
         self.current_case = self.batch.cases[row]
+        if self.current_case.workbook_profile:
+            from document_excel.infrastructure.excel import TemplateProfile
+
+            self.profile = TemplateProfile.model_validate(self.current_case.workbook_profile)
         self.field_model = FieldTableModel(
             self.current_case, self.profile.pin_length, self.profile.identifier_label
         )
@@ -395,9 +399,7 @@ class MainWindow(QMainWindow):
         )
         self.upload_document_type.blockSignals(False)
         reports = self.current_case.mrz_reports.values()
-        self.mrz_status.setVisible(
-            bool(self.current_case.mrz_reports) or self.current_case.data.document_type == "kg_physical_id"
-        )
+        self.mrz_status.hide()  # Detailed MRZ report is available in Additional actions.
         self.mrz_status.setText(
             "Есть расхождения между MRZ и распознанными данными"
             if any(r.conflicts for r in reports)
@@ -436,6 +438,21 @@ class MainWindow(QMainWindow):
                 self.review_summary.text() + "\n" + " · ".join(self.current_case.errors[:2])
             )
         template = self.current_case.template_path
+        self.contract_name.setText(template.name if template else "Выберите договор Excel")
+        compatible = bool(
+            self.current_case.workbook_profile and self.current_case.workbook_profile.get("field_mappings")
+        )
+        self.contract_status.setText(
+            "Договор распознан. Можно продолжить · " + self.profile.name
+            if compatible
+            else "Нужна однократная настройка в разделе «Дополнительно»"
+            if template
+            else "Готовый договор XLSX с инструментами, ценами и формулами"
+        )
+        if self.current_case.workflow_mode == WorkflowMode.TEMPLATE_GENERATION:
+            self.contract_status.setText(
+                "Дополнительный режим заполнения шаблона: инструменты, цены и залог могут быть заменены."
+            )
         self.template_label.setText(template.name if template else "Выберите Excel-шаблон")
         self.profile_label.setText("Профиль: " + self.profile.name)
         self.photo_panel.refresh(display_case, self.profile)
@@ -475,7 +492,7 @@ class MainWindow(QMainWindow):
             for col, text in enumerate([label, mapping.sheet, mapping.cell]):
                 self.mapping_table.setItem(row, col, QTableWidgetItem(text))
         if self.current_step == 0:
-            self.primary_button.setEnabled(bool(self.current_case.images) and not self.active_worker)
+            self.primary_button.setEnabled(self.can_recognize() and not self.active_worker)
 
     def on_edited(self, _field):
         self.current_case.status = "На проверке"
@@ -485,16 +502,14 @@ class MainWindow(QMainWindow):
 
     def refresh_photos(self):
         loaded = bool(self.current_case.images)
-        self.dropzone.illustration.setVisible(not loaded)
+        self.dropzone.illustration.hide()
         self.formats_label.setVisible(not loaded)
         self.upload_summary.setVisible(not loaded)
-        self.dropzone.title.setText("Добавьте ещё фотографии" if loaded else "Добавьте фотографии документа")
-        self.dropzone.setMinimumHeight(145 if loaded else 220)
-        self.dropzone.setMaximumHeight(172 if loaded else 16777215)
+        self.dropzone.title.setText("Паспорт клиента")
+        self.dropzone.setMinimumHeight(280 if loaded else 310)
+        self.dropzone.setMaximumHeight(16777215)
         self.case_title.setText(self.current_case.name)
-        self.dropzone.layout().setContentsMargins(
-            24, 14 if self.current_case.images else 28, 24, 14 if self.current_case.images else 28
-        )
+        self.dropzone.layout().setContentsMargins(16, 12, 16, 12)
         while self.thumbnail_layout.count():
             item = self.thumbnail_layout.takeAt(0)
             if item.widget():
@@ -790,9 +805,7 @@ class MainWindow(QMainWindow):
             button.setEnabled(not busy)
         self.cancel_button.setEnabled(busy)
         self.primary_button.setEnabled(
-            busy
-            if self.current_step == 1
-            else not busy and (self.current_step != 0 or bool(self.current_case.images))
+            busy if self.current_step == 1 else not busy and (self.current_step != 0 or self.can_recognize())
         )
 
     def cancel_work(self):

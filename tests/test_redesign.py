@@ -59,12 +59,20 @@ def test_empty_workflow_has_one_primary_and_hides_technical_table(redesigned_win
     )
 
 
-def test_two_sides_stay_in_one_client_and_can_be_reviewed(redesigned_window, image_factory):
+def test_two_sides_stay_in_one_client_and_can_be_reviewed(
+    redesigned_window, image_factory, template, qtbot, monkeypatch
+):
     window = redesigned_window
     window.case_actions.add_images([image_factory(), image_factory(name="synthetic-back.png")])
     assert len(window.batch.cases) == 1
     assert len(window.current_case.images) == 2
     assert window.image_list.count() == 2
+    assert not window.primary_button.isEnabled()  # A contract is selected before recognition.
+    from PySide6.QtWidgets import QFileDialog
+
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *args: (str(template), ""))
+    window.excel_actions.choose_template()
+    qtbot.waitUntil(lambda: not window.background_workers, timeout=10000)
     assert window.primary_button.isEnabled()
     window.go_step(2)
     assert window.step_stack.currentIndex() == 2

@@ -92,6 +92,7 @@ class PackageEditor:
         }
         self.styles = document(self.parts["xl/styles.xml"])
         self.styles_changed = False
+        self.personal_shared_strings: set[str] = set()
 
     def unique_part(self, folder, stem, suffix):
         index = 1
@@ -218,6 +219,11 @@ class PackageEditor:
             raise AppError("Нельзя частично заменить общую формулу Excel.")
         for change in changes:
             cell = cells.get(change.cell)
+            if cell is not None and cell.getAttribute("t") == "s" and getattr(change, "field_name", ""):
+                for value in elements(cell, "v"):
+                    self.personal_shared_strings.add(
+                        "".join(n.data for n in value.childNodes if n.nodeType == Node.TEXT_NODE)
+                    )
             row_number, column = coordinate_to_tuple(change.cell)
             if row_number not in rows:
                 row = child(data, "row")
@@ -259,6 +265,36 @@ class PackageEditor:
             node = child(cell, "f" if change.formula else "v")
             node.appendChild(doc.createTextNode(str(value)[1:] if change.formula else str(value)))
             cell.insertBefore(node, cell.firstChild)
+        self.parts[path] = encoded(doc)
+
+    def scrub_personal_shared_strings(self):
+        """Clear obsolete personal entries without renumbering shared strings.
+
+        Entries still referenced anywhere in the workbook remain unchanged;
+        unrelated strings, formulas and their indices are preserved.
+        """
+        path = "xl/sharedStrings.xml"
+        if not self.personal_shared_strings or path not in self.parts:
+            return
+        used = set()
+        references = 0
+        for worksheet in self.sheets.values():
+            doc = document(self.parts[worksheet])
+            for cell in doc.getElementsByTagNameNS(MAIN, "c"):
+                if cell.getAttribute("t") == "s":
+                    references += 1
+                    for value in elements(cell, "v"):
+                        used.add("".join(n.data for n in value.childNodes if n.nodeType == Node.TEXT_NODE))
+        obsolete = self.personal_shared_strings - used
+        if not obsolete:
+            return
+        doc = document(self.parts[path])
+        doc.documentElement.setAttribute("count", str(references))
+        for index, entry in enumerate(doc.getElementsByTagNameNS(MAIN, "si")):
+            if str(index) in obsolete:
+                for node in list(entry.childNodes):
+                    entry.removeChild(node)
+                entry.appendChild(child(entry, "t"))
         self.parts[path] = encoded(doc)
 
     def save(self, destination):

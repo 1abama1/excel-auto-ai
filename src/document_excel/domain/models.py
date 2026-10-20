@@ -11,6 +11,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from document_excel.domain.person_name import PersonNameFormatter
+
 
 def new_id() -> str:
     return uuid4().hex
@@ -49,6 +51,11 @@ class DocumentType(StrEnum):
     UNKNOWN = "unknown"
     KG_PHYSICAL_ID = "kg_physical_id"
     KG_DIGITAL_ID = "kg_digital_id"
+
+
+class WorkflowMode(StrEnum):
+    EXISTING_CONTRACT = "EXISTING_CONTRACT"
+    TEMPLATE_GENERATION = "TEMPLATE_GENERATION"
 
 
 class MRZReport(BaseModel):
@@ -260,6 +267,10 @@ class ClientCase(BaseModel):
     errors: list[str] = Field(default_factory=list)
     confirmed_digest: str | None = None
     template_path: Path | None = None
+    # Legacy service callers retain template generation; desktop creates cases
+    # explicitly in EXISTING_CONTRACT mode.
+    workflow_mode: WorkflowMode = WorkflowMode.TEMPLATE_GENERATION
+    workbook_profile: dict[str, Any] | None = None
     output_path: Path | None = None
     photo_exception: bool = False
     document_type_manual: bool = False
@@ -278,6 +289,12 @@ class ClientCase(BaseModel):
 
     def digest(self) -> str:
         payload = [
+            self.workflow_mode.value,
+            str(self.template_path)
+            if self.template_path and self.workflow_mode == WorkflowMode.EXISTING_CONTRACT
+            else None,
+            self.workbook_profile,
+            self.formatted_name,
             self.data.model_dump(mode="json"),
             self.contract.model_dump(mode="json"),
             self.registration_status.value,
@@ -291,6 +308,26 @@ class ClientCase(BaseModel):
             {k: v.status.value for k, v in self.evidence.items()},
         ]
         return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+    @property
+    def formatted_name(self) -> str:
+        evidence = self.evidence.get("full_name")
+        if evidence and evidence.source_method == "MANUAL_INPUT":
+            return PersonNameFormatter.format(self.data.full_name, preserve=True)
+        parts = [self.data.surname, self.data.first_name, self.data.patronymic]
+        composed = " ".join(p for p in parts if p)
+        if composed and composed == self.data.full_name:
+            return " ".join(
+                PersonNameFormatter.format(
+                    value,
+                    preserve=bool(
+                        self.evidence.get(key) and self.evidence[key].source_method == "MANUAL_INPUT"
+                    ),
+                )
+                for key, value in zip(("surname", "first_name", "patronymic"), parts, strict=True)
+                if value
+            )
+        return PersonNameFormatter.format(self.data.full_name)
 
     @property
     def confirmed(self) -> bool:

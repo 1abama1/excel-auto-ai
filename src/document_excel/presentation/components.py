@@ -222,7 +222,7 @@ class Notification(QFrame):
 
 class StepIndicator(QWidget):
     selected = Signal(int)
-    TITLES = ["Загрузка", "Распознавание", "Проверка", "Excel", "Готово"]
+    TITLES = ["Договор и паспорт", "Распознавание", "Проверка данных", "Excel", "Готовый договор"]
 
     def __init__(self):
         super().__init__()
@@ -231,19 +231,26 @@ class StepIndicator(QWidget):
         layout.setSpacing(6)
         self.buttons = []
         for i, title in enumerate(self.TITLES):
-            button = QPushButton(f"{i + 1}  {title}")
+            number = {0: 1, 2: 2, 4: 3}.get(i, i + 1)
+            button = QPushButton(f"{number}  {title}")
             button.setObjectName("step")
             button.setMinimumHeight(36)
             button.clicked.connect(lambda _checked=False, index=i: self.selected.emit(index))
             layout.addWidget(button)
             self.buttons.append(button)
+            button.setVisible(i in (0, 2, 4))
         layout.addStretch()
         self.update_step(0)
 
     def update_step(self, current: int):
         for i, button in enumerate(self.buttons):
             button.setProperty(
-                "state", "active" if i == current else "complete" if i < current else "pending"
+                "state",
+                "active"
+                if i == ({1: 0, 3: 2}.get(current, current))
+                else "complete"
+                if i < current
+                else "pending",
             )
             button.setEnabled(i <= current and i != 1)
             button.style().unpolish(button)
@@ -604,10 +611,10 @@ class ReviewForm(QScrollArea):
         groups = [
             (
                 "Личные данные",
-                ["full_name", "birth_date", "personal_identifier", "gender", "citizenship"],
+                ["full_name", "birth_date", "personal_identifier"],
                 True,
             ),
-            ("Состав ФИО", ["surname", "first_name", "patronymic"], False),
+            ("Фамилия, имя и отчество", ["surname", "first_name", "patronymic"], True),
             (
                 "Документ",
                 [
@@ -616,15 +623,18 @@ class ReviewForm(QScrollArea):
                     "passport_issued_by",
                     "passport_department_code",
                     "passport_issued_date",
-                    "expiration_date",
                 ],
                 True,
             ),
-            ("Адреса", ["registration_address", "living_address"], True),
+            ("Прописка", ["registration_address"], True),
             ("Контакты", ["whatsapp_phone", "additional_phone"], False),
             (
                 "Дополнительно",
                 [
+                    "gender",
+                    "citizenship",
+                    "expiration_date",
+                    "living_address",
                     "place_of_birth",
                     "surname_cyrillic",
                     "surname_latin",

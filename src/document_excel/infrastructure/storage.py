@@ -34,6 +34,7 @@ class Settings(BaseModel):
     preprocessing: str = "auto"
     max_parallel: int = Field(default=1, ge=1, le=2)
     output_directory: str = ""
+    filename_pattern: str = "{full_name} - {date}"
     image_directory: str = ""
     template_directory: str = ""
     temp_directory: str = ""

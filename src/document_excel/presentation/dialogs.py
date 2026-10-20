@@ -21,8 +21,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from document_excel.domain.models import Address, ContractData, RegistrationStatus, ToolItem, parse_date
+from document_excel.domain.models import (
+    FIELD_LABELS,
+    Address,
+    ContractData,
+    RegistrationStatus,
+    ToolItem,
+    parse_date,
+)
 from document_excel.infrastructure.excel import (
+    CONDITIONAL_FIELDS,
     EXPORT_FIELDS,
     CellMapping,
     ExportPlan,
@@ -220,6 +228,8 @@ class SettingsDialog(QDialog):
         self.copy = QCheckBox("Копировать фото по нажатию «Сохранить копии фото»")
         self.copy.setChecked(settings.copy_images)
         form.addRow("Хранение фото", self.copy)
+        self.filename_pattern = QLineEdit(settings.filename_pattern)
+        form.addRow("Имя договора · {full_name}, {date}", self.filename_pattern)
         note = QLabel(
             "Документы обрабатываются локально на CPU. RapidOCR и Paddle используют установленные модели PP-OCRv5 без интернета, NVIDIA, CUDA и cuDNN.\nОтмена нейронного OCR останавливает процесс; Tesseract: после текущего прохода, не позднее timeout."
         )
@@ -256,6 +266,7 @@ class SettingsDialog(QDialog):
                 "ui_scale": self.scale.value(),
                 "history_enabled": self.history.isChecked(),
                 "copy_images": self.copy.isChecked(),
+                "filename_pattern": self.filename_pattern.text().strip(),
             }
         )
 
@@ -451,10 +462,18 @@ class ExportDialog(QDialog):
     def __init__(self, plan: ExportPlan, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Предпросмотр Excel · подтверждение записи")
-        self.resize(1100, 620)
-        layout = QVBoxLayout(self)
+        self.resize(950, 700)
+        outer = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        scroll.setWidget(body)
+        outer.addWidget(scroll)
         title = QLabel(
-            f"Будет записано ячеек: {len(plan.changes)}. Новых листов: {len(plan.new_sheets)}.\nИсходный Excel сохраняется; результат записывается в новый файл."
+            "Будут обновлены данные клиента. Инструменты, цены, залог и формулы сохраняются.\nРезультат записывается в новую копию."
+            if plan.existing_contract
+            else f"Будет записано ячеек: {len(plan.changes)}. Новых листов: {len(plan.new_sheets)}.\nИсходный Excel сохраняется; результат записывается в новый файл."
         )
         title.setWordWrap(True)
         layout.addWidget(title)
@@ -467,6 +486,82 @@ class ExportDialog(QDialog):
         self.table.setColumnWidth(2, 170)
         self.table.setColumnWidth(3, 240)
         layout.addWidget(self.table)
+        if plan.existing_contract:
+            self.table.hide()
+            summary = QTableWidget(len(plan.changes), 3)
+            summary.setHorizontalHeaderLabels(["Поле", "Было", "Станет"])
+            summary.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+            summary.setMinimumHeight(200)
+            summary.horizontalHeader().setStretchLastSection(True)
+            for row, change in enumerate(plan.changes):
+                label = FIELD_LABELS.get(change.field_name.split(".")[0], change.source)
+                for col, value in enumerate(
+                    (label, change.old, change.new if change.new is not None else "Будет очищено")
+                ):
+                    summary.setItem(row, col, QTableWidgetItem(str(value or "")))
+            summary.resizeColumnsToContents()
+            layout.addWidget(summary)
+            details = QCheckBox("Посмотреть подробные изменения")
+            details.toggled.connect(self.table.setVisible)
+            layout.addWidget(details)
+        if plan.identity_conflict:
+            warning = QLabel(
+                "В договоре обнаружены данные другого клиента. Все перечисленные паспортные поля будут заменены. Проверьте отсутствующие сведения и сохраняемые контакты."
+            )
+            warning.setWordWrap(True)
+            warning.setObjectName("fieldError")
+            layout.addWidget(warning)
+        self.clear_confirm = QCheckBox("Разрешаю очистить отсутствующие паспортные поля предыдущего клиента")
+        self.clear_confirm.setVisible(bool(plan.missing_personal))
+        self.clear_confirm.setChecked(not plan.missing_personal)
+        if plan.missing_personal:
+            missing = QLabel(
+                "Заполните эти сведения в форме или подтвердите очистку: " + ", ".join(plan.missing_personal)
+            )
+            missing.setWordWrap(True)
+            layout.addWidget(missing)
+        layout.addWidget(self.clear_confirm)
+        self.preserved_confirm = QCheckBox(
+            "Проверил(а) действия с исходными значениями; оставляемые сведения относятся к текущему клиенту"
+        )
+        self.preserved_confirm.setVisible(bool(plan.preserved))
+        self.preserved_confirm.setChecked(not plan.preserved)
+        if plan.preserved:
+            preserved = QTableWidget(len(plan.preserved), 3)
+            preserved.setHorizontalHeaderLabels(["Поле исходного договора", "Значение", "Действие"])
+            preserved.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+            preserved.setMinimumHeight(130)
+            preserved.horizontalHeader().setStretchLastSection(True)
+            for row, change in enumerate(plan.preserved):
+                preserved.setItem(row, 0, QTableWidgetItem(change.source))
+                preserved.setItem(row, 1, QTableWidgetItem(str(change.old)))
+                preserved.setItem(row, 2, QTableWidgetItem("Сохранить"))
+            preserved.resizeColumnsToContents()
+            layout.addWidget(preserved)
+        layout.addWidget(self.preserved_confirm)
+        self.clear_contacts = QCheckBox(
+            "Очистить отсутствующие контакты и адрес объекта вместо сохранения старых значений"
+        )
+        self.clear_contacts.setVisible(
+            any(
+                item.field_name in CONDITIONAL_FIELDS
+                and not (isinstance(item.old, str) and item.old.startswith("="))
+                for item in plan.preserved
+            )
+        )
+        if plan.preserved:
+
+            def contact_action(checked):
+                for row, item in enumerate(plan.preserved):
+                    clear = (
+                        checked
+                        and item.field_name in CONDITIONAL_FIELDS
+                        and not (isinstance(item.old, str) and item.old.startswith("="))
+                    )
+                    preserved.setItem(row, 2, QTableWidgetItem("Очистить" if clear else "Сохранить"))
+
+            self.clear_contacts.toggled.connect(contact_action)
+        layout.addWidget(self.clear_contacts)
         self.plan = plan
         self.image_confirm = QCheckBox("Разрешаю убрать показанные существующие рисунки из области A1:K24")
         self.image_confirm.setChecked(not (plan.photos and plan.photos.conflicts))
@@ -479,7 +574,8 @@ class ExportDialog(QDialog):
                 column = QVBoxLayout()
                 column.addWidget(
                     QLabel(
-                        f"{'Лицевая' if photo.role.value == 'FRONT' else 'Оборотная'} · {plan.photos.sheet}!{photo.area}"
+                        ("Лицевая" if photo.role.value == "FRONT" else "Оборотная")
+                        + ("" if plan.existing_contract else f" · {plan.photos.sheet}!{photo.area}")
                     )
                 )
                 image = QLabel()
@@ -516,19 +612,33 @@ class ExportDialog(QDialog):
                 layout.addLayout(previous)
         layout.addWidget(self.image_confirm)
         self.confirm = QCheckBox("Я проверил(а) значения и фотографии и разрешаю запись")
-        layout.addWidget(self.confirm)
-        box = buttons(self, layout, "Выбрать файл и сохранить")
+        outer.addWidget(self.confirm)
+        box = buttons(self, outer, "Выбрать файл и сохранить")
         self.save_button = box.button(QDialogButtonBox.StandardButton.Save)
         self.save_button.setEnabled(False)
         self.confirm.toggled.connect(self.update_save)
         self.image_confirm.toggled.connect(self.update_save)
+        self.clear_confirm.toggled.connect(self.update_save)
+        self.preserved_confirm.toggled.connect(self.update_save)
 
     def update_save(self):
-        self.save_button.setEnabled(self.confirm.isChecked() and self.image_confirm.isChecked())
+        self.save_button.setEnabled(
+            all(
+                c.isChecked()
+                for c in (self.confirm, self.image_confirm, self.clear_confirm, self.preserved_confirm)
+            )
+        )
 
     def accept(self):
-        if self.confirm.isChecked() and self.image_confirm.isChecked():
+        if all(
+            c.isChecked()
+            for c in (self.confirm, self.image_confirm, self.clear_confirm, self.preserved_confirm)
+        ):
             self.plan.image_replace_confirmed = bool(self.plan.photos and self.plan.photos.conflicts)
+            self.plan.clear_missing_confirmed = self.clear_confirm.isChecked()
+            self.plan.preserved_confirmed = self.preserved_confirm.isChecked()
+            if self.clear_contacts.isChecked():
+                self.plan.clear_preserved_contacts()
             super().accept()
 
 

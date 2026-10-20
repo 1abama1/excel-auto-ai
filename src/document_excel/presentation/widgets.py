@@ -14,6 +14,7 @@ from document_excel.domain.models import (
     ClientCase,
     FieldEvidence,
     FieldStatus,
+    WorkflowMode,
     data_value,
     normalize,
     parse_date,
@@ -21,6 +22,7 @@ from document_excel.domain.models import (
     split_mkk_authority,
     validate_field,
 )
+from document_excel.domain.person_name import PersonNameFormatter
 from document_excel.infrastructure.excel import ExportPlan
 from document_excel.infrastructure.preprocessing import detect_document_region, load_image
 
@@ -64,7 +66,28 @@ class FieldTableModel(QAbstractTableModel):
             return None
         field = self.fields[index.row()]
         value = self.raw_edits.get(field, data_value(self.case.data, field))
+        if (
+            field == "full_name"
+            and field not in self.raw_edits
+            and self.case.workflow_mode == WorkflowMode.EXISTING_CONTRACT
+        ):
+            value = self.case.formatted_name
         evidence = self.case.evidence.get(field, FieldEvidence())
+        if (
+            field
+            in {
+                "surname",
+                "first_name",
+                "patronymic",
+                "surname_cyrillic",
+                "surname_latin",
+                "first_name_cyrillic",
+                "first_name_latin",
+                "patronymic_cyrillic",
+            }
+            and self.case.workflow_mode == WorkflowMode.EXISTING_CONTRACT
+        ):
+            value = PersonNameFormatter.format(value, preserve=evidence.source_method == "MANUAL_INPUT")
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
             return [
                 self.identifier_label if field == "personal_identifier" else FIELD_LABELS[field],

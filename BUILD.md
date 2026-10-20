@@ -1,5 +1,22 @@
 # Сборка
 
+## Текущий готовый договор — 20.10.2026
+
+Автономная CPU-поставка: `dist-contract/DocumentExcel/DocumentExcel.cmd`.
+Python 3.12, Qt, RapidOCR/PaddleOCR CPU и проверенные модели включены;
+переносится вся папка. Пользовательские договоры и реальные фото не включены.
+`Launch.cmd` выбирает эту поставку через `current-build.txt`.
+
+Сборка из существующего локального проверенного runtime:
+
+```powershell
+dist-digital\DocumentExcel\runtime\python.exe -X utf8 scripts/package_cpu_windows.py --base dist-digital/DocumentExcel --output dist-contract/DocumentExcel --packages dist-digital/DocumentExcel/runtime/Lib/site-packages --models models/rapidocr --release existing-contract-2026-10-20
+```
+
+Для запуска скрипта сборки source `src` должен быть в sys.path (как при
+обычной установке проекта). Точный проверенный запуск и результаты записаны
+в TEST_REPORT.md. Ниже — история других вариантов упаковки.
+
 Новая поставка одним EXE: `dist-onefile/DocumentExcel.exe`. Сборщик
 `scripts/build_onefile.py` упаковывает проверенный Python 3.12 runtime,
 приложение, RapidOCR и модели; C# launcher автоматически устанавливает

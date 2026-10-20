@@ -30,6 +30,7 @@ from document_excel.domain.models import (
     FieldEvidence,
     FieldStatus,
     RegistrationStatus,
+    WorkflowMode,
     data_value,
 )
 from document_excel.infrastructure.excel import (
@@ -55,7 +56,7 @@ class CaseActions(QObject):
         self.window.commit_edits()
         case = ClientCase(
             name=f"Клиент {len(self.window.batch.cases) + 1}",
-            template_path=self.window.current_case.template_path,
+            workflow_mode=WorkflowMode.EXISTING_CONTRACT,
         )
         self.window.batch.cases.append(case)
         self.window.refresh_cases()
@@ -106,7 +107,9 @@ class CaseActions(QObject):
         self.window.batch.cases = [case for case in self.window.batch.cases if case.id != source.id]
         self.window.case_ocr_texts.pop(source.id, None)
         if not self.window.batch.cases:
-            self.window.batch.cases.append(ClientCase(name="Клиент 1"))
+            self.window.batch.cases.append(
+                ClientCase(name="Клиент 1", workflow_mode=WorkflowMode.EXISTING_CONTRACT)
+            )
         if selected_case is source:
             selected_case = self.window.batch.cases[0]
         self.window.refresh_cases()
@@ -143,6 +146,35 @@ class CaseActions(QObject):
         self.window.notice.setText(
             " ".join(errors) if errors else "Фотографии добавлены. Нажмите «Распознать документы»."
         )
+
+    def choose_side_image(self, side):
+        if self.window.active_worker:
+            return
+        name, _ = QFileDialog.getOpenFileName(
+            self.window,
+            "Фотография паспорта",
+            "",
+            "Изображения (*.jpg *.jpeg *.png *.webp *.bmp *.tif *.tiff)",
+        )
+        if not name:
+            return
+        case = self.window.current_case
+        previous = [image for image in case.images if image.role == side]
+        if previous and not ConfirmDialog.ask(
+            self.window, "Заменить фотографию", "Заменить выбранную сторону паспорта новым снимком?"
+        ):
+            return
+        old_ids = {image.id for image in case.images}
+        self.add_images([Path(name)])
+        added = [image for image in case.images if image.id not in old_ids]
+        if added:
+            for image in previous:
+                self.window.case_service.remove_evidence(case, image.id)
+                case.images.remove(image)
+            added[0].role = side
+            case.invalidate()
+            self.window.select_case(self.window.batch.cases.index(case))
+            self.window.go_step(0)
 
     def rotate_image(self):
         index = self.window.image_list.currentIndex()
@@ -206,7 +238,8 @@ class CaseActions(QObject):
         dialog.deleteLater()
         if accepted and self.window.current_case is case and not self.window.closing:
             self.window.select_case(self.window.batch.cases.index(case))
-            QTimer.singleShot(0, self.window, self.start_ocr)
+            if self.window.can_recognize():
+                QTimer.singleShot(0, self.window, self.start_ocr)
 
     def capture_directory(self):
         settings = self.window.settings
@@ -1087,6 +1120,9 @@ class CaseActions(QObject):
         self.window.refresh_form()
         self.window.refresh_cases()
         self.window.go_step(3)
+        if case.workflow_mode == WorkflowMode.EXISTING_CONTRACT:
+            self.window.go_step(2)
+            QTimer.singleShot(0, self.window, self.window.excel_actions.export_current)
 
     def clear_workspace(self):
         if self.window.active_worker:
@@ -1108,7 +1144,9 @@ class CaseActions(QObject):
             self.window.undo_stack.clear()
             self.window.case_ocr_texts.clear()
             self.window.last_result = None
-            self.window.batch = DocumentBatch(cases=[ClientCase(name="Клиент 1")])
+            self.window.batch = DocumentBatch(
+                cases=[ClientCase(name="Клиент 1", workflow_mode=WorkflowMode.EXISTING_CONTRACT)]
+            )
             self.window.select_case(0)
             self.window.case_raw_edits.clear()
             self.window.case_steps.clear()

@@ -263,13 +263,13 @@ class ExcelImageEmbedder:
                     )
                 name = properties[0].getAttribute("name")
                 identifier = properties[0].getAttribute("id")
-                if name.startswith("DocumentExcel|"):
+                if name.startswith(f"DocumentExcel|{tag}|"):
+                    plan.remove_ids.add(identifier)
+                elif name.startswith("DocumentExcel|") and case.workflow_mode.value != "EXISTING_CONTRACT":
                     if not name.startswith(f"DocumentExcel|{tag}|"):
                         raise AppError(
                             "В области фотографий есть снимки другого клиента. Выберите исходный чистый шаблон."
                         )
-                    # Missing sides must not retain stale photographs on repeat export.
-                    plan.remove_ids.add(identifier)
                 elif insertions or profile.photos_required:
                     plan.remove_ids.add(identifier)
                     plan.conflicts.append(f"Рисунок {identifier} · пересекает A1:K24")
@@ -372,8 +372,11 @@ class ExcelImageEmbedder:
             if props and props[0].getAttribute("id") in plan.remove_ids:
                 doc.documentElement.removeChild(node)
         used_relations = {n.getAttributeNS(REL, "embed") for n in doc.getElementsByTagNameNS(ART, "blip")}
+        removed_media = set()
         for link in list(elements(rels.documentElement, "Relationship")):
             if link.getAttribute("Type") == REL + "/image" and link.getAttribute("Id") not in used_relations:
+                if link.getAttribute("TargetMode") != "External":
+                    removed_media.add(resolve(drawing_path, link.getAttribute("Target")))
                 rels.documentElement.removeChild(link)
         max_id = max([int(n.getAttribute("id")) for n in doc.getElementsByTagNameNS(DRAW, "cNvPr")] + [0])
         for index, photo in enumerate(plan.insertions, max_id + 1):
@@ -408,7 +411,7 @@ class ExcelImageEmbedder:
         # Delete only unreferenced media owned by this app/client. Original
         # logos and media shared with another drawing are always preserved.
         for media in list(editor.parts):
-            if not media.startswith(f"xl/media/document-excel-{plan.case_tag}-"):
+            if media not in removed_media and not media.startswith(f"xl/media/document-excel-{plan.case_tag}-"):
                 continue
             filename = Path(media).name.encode()
             if not any(filename in data for name, data in editor.parts.items() if name.endswith(".rels")):

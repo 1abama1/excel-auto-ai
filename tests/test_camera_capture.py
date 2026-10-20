@@ -314,6 +314,13 @@ def test_camera_ui_to_real_ocr_and_embedded_excel(qtbot, image_factory, template
     window.settings.ocr_engine = "tesseract"
     window.settings.languages = ["eng"]
     window.settings.preprocessing = "original"
+    book = load_workbook(template)
+    book.create_sheet("Пасп Доп Данные")
+    book.save(template)
+    book.close()
+    window.current_case.template_path = template
+    _, window.profile = window.workbooks.describe(template, window.profile, strict=True)
+    window.current_case.workbook_profile = window.profile.model_dump(mode="json")
     errors = []
     monkeypatch.setattr(window, "error", errors.append)
     qtbot.addWidget(
@@ -344,12 +351,7 @@ def test_camera_ui_to_real_ocr_and_embedded_excel(qtbot, image_factory, template
     assert all(s.processed_confirmed for s in case.images)
     assert case.data.personal_identifier == "00123456789012"
     assert case.data.passport_number == "0000001"
-    book = load_workbook(template)
-    book.create_sheet("Пасп Доп Данные")
-    book.save(template)
-    book.close()
-    window.profile.photo_sheet = "Пасп Доп Данные"
-    window.profile.photos_required = True
+    window.apply_field_edit("full_name", "Тестов Пример Тестович")
     case.registration_status = RegistrationStatus.USER_CONFIRMED
     case.confirmed_digest = case.digest()
     result = window.workbooks.write(
