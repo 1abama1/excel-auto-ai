@@ -53,36 +53,42 @@ class ExcelActions(QObject):
             "Excel (*.xlsx)",
         )
         if name:
-            path = Path(name)
-            case = self.window.current_case
+            self.load_template(Path(name))
 
-            def loaded(description):
-                sheets, profile = description
-                case.template_path = path
-                case.workbook_profile = profile.model_dump(mode="json")
-                case.output_path = None
-                case.invalidate()
-                self.window.template_sheets[path] = sheets
-                if profile != self.window.profile:
-                    self.use_profile(profile)
-                self.window.settings.default_template = str(path)
-                self.window.save_settings()
-                self.window.refresh_form()
-                self.window.notice.setText(
-                    "Договор распознан. Можно продолжить"
-                    if profile.field_mappings
-                    else "Структура договора неизвестна. В разделе «Дополнительно» настройте расположение полей."
-                )
+    def load_template(self, path):
+        if self.window.active_worker:
+            return
+        self.window.commit_edits()
+        path = Path(path)
+        case = self.window.current_case
 
-            self.window.run_worker(
-                lambda _c, _p: self.window.workbooks.describe(
-                    path,
-                    self.window.profile,
-                    strict=case.workflow_mode == WorkflowMode.EXISTING_CONTRACT,
-                    registry=self.window.registry,
-                ),
-                loaded,
+        def loaded(description):
+            sheets, profile = description
+            case.template_path = path
+            case.workbook_profile = profile.model_dump(mode="json")
+            case.output_path = None
+            case.invalidate()
+            self.window.template_sheets[path] = sheets
+            if profile != self.window.profile:
+                self.use_profile(profile)
+            self.window.settings.default_template = str(path)
+            self.window.save_settings()
+            self.window.refresh_form()
+            self.window.notice.setText(
+                "Договор распознан. Можно продолжить"
+                if profile.field_mappings
+                else "Структура договора неизвестна. В разделе «Дополнительно» настройте расположение полей."
             )
+
+        self.window.run_worker(
+            lambda _c, _p: self.window.workbooks.describe(
+                path,
+                self.window.profile,
+                strict=case.workflow_mode.updates_existing,
+                registry=self.window.registry,
+            ),
+            loaded,
+        )
 
     def edit_mapping(self):
         self.edit_profile(self.window.profile)
@@ -186,7 +192,7 @@ class ExcelActions(QObject):
         self.window.commit_edits()
         case = self.window.current_case
         if not case.template_path:
-            self.window.error("Выберите Excel-шаблон.")
+            self.window.error("Выберите Excel-договор.")
             return
         snapshot = case.model_copy(deep=True)
         profile = self.window.profile.model_copy(deep=True)
@@ -195,7 +201,36 @@ class ExcelActions(QObject):
             lambda plan: self.preview_and_save(plan, case, profile),
         )
 
+    def document_filename(self, case, profile):
+        from document_excel.infrastructure.excel import usable_value
+
+        name = case.formatted_name if usable_value(case, "full_name", profile.pin_length) else ""
+        return self.filenames.generate(name, preserve=True, pattern="{full_name} {date}")
+
+    def document_target(self, plan, case, profile):
+        return self.filenames.available(
+            plan.source.with_name(self.document_filename(case, profile)), current=plan.source
+        )
+
+    def adopt_document_path(self, case, result):
+        previous = case.template_path
+        if previous and previous != result:
+            if previous in self.window.template_sheets:
+                self.window.template_sheets[result] = self.window.template_sheets.pop(previous)
+            case.template_path = result
+
     def preview_and_save(self, plan, case, profile):
+        if plan.best_effort:
+            from document_excel.presentation.dialogs import CopySaveDialog
+
+            dialog = CopySaveDialog(
+                plan, self.document_target(plan, case, profile), self.window, in_place=True
+            )
+            if dialog.exec():
+                QTimer.singleShot(
+                    0, self.window, lambda: self.save_plan(plan, plan.source, case, profile, in_place=True)
+                )
+            return
         dialog = ExportDialog(plan, self.window)
         if not dialog.exec():
             return
@@ -253,9 +288,23 @@ class ExcelActions(QObject):
                 lambda: self.save_plan(plan, target, case, profile, automatic=automatic, numbered=numbered),
             )
 
-    def save_plan(self, plan, path, case, profile, *, automatic=False, numbered=False):
+    def save_plan(self, plan, path, case, profile, *, automatic=False, numbered=False, in_place=False):
         def done(result):
+            if in_place:
+                self.adopt_document_path(case, result)
             case.output_path = result
+            if plan.best_effort:
+                case.missing_value_policy = plan.missing_value_policy
+                case.updated_fields = list(
+                    dict.fromkeys(c.field_name.split(".")[0] for c in plan.changes if c.new is not None)
+                )
+                case.cleared_fields = list(
+                    dict.fromkeys(c.field_name.split(".")[0] for c in plan.changes if c.new is None)
+                )
+                case.missing_fields = plan.warnings.missing_fields
+                case.unchanged_fields = list(
+                    dict.fromkeys(c.field_name.split(".")[0] for c in plan.preserved)
+                )
             case.status = "Excel сохранён"
             self.window.last_result = result
             self.window.settings.output_directory = str(result.parent)
@@ -272,10 +321,18 @@ class ExcelActions(QObject):
                 )
 
         def write(_c, _p):
+            if in_place:
+                return self.window.workbooks.update_existing(
+                    plan, case, profile, new_name=self.document_filename(case, profile)
+                )
+            from document_excel.infrastructure.excel import usable_value
+
             target = path
             if automatic:
                 target = path.parent / self.filenames.generate(
-                    case.formatted_name, preserve=True, pattern=self.window.settings.filename_pattern
+                    case.formatted_name if not plan.best_effort or usable_value(case, "full_name") else "",
+                    preserve=True,
+                    pattern=self.window.settings.filename_pattern,
                 )
             return self.write_target(plan, target, case, profile, numbered)
 
@@ -306,7 +363,7 @@ class ExcelActions(QObject):
 
     def existing_mode(self):
         if not self.window.active_worker:
-            self.window.current_case.workflow_mode = WorkflowMode.EXISTING_CONTRACT
+            self.window.current_case.workflow_mode = WorkflowMode.BEST_EFFORT_UPDATE
             self.window.current_case.invalidate()
             self.window.refresh_form()
 
@@ -322,11 +379,23 @@ class ExcelActions(QObject):
         if not pending:
             self.window.message("Все записи очереди уже сохранены.")
             return
-        folder = QFileDialog.getExistingDirectory(
-            self.window, "Папка отдельных договоров", self.window.settings.output_directory
-        )
-        if not folder:
+        selected = [
+            case.template_path.resolve()
+            for case in pending
+            if case.workflow_mode.updates_existing and case.template_path
+        ]
+        if len(selected) != len(set(selected)):
+            self.window.error(
+                "Несколько записей выбрали один Excel-файл. Оставьте одну запись для каждого обновляемого документа."
+            )
             return
+        folder = ""
+        if any(case.workflow_mode != WorkflowMode.BEST_EFFORT_UPDATE for case in pending):
+            folder = QFileDialog.getExistingDirectory(
+                self.window, "Папка отдельных договоров", self.window.settings.output_directory
+            )
+            if not folder:
+                return
         self.window.batch_export_queue = list(pending)
         self.window.batch_export_total = len(pending)
         self.window.batch_export_folder = Path(folder)
@@ -356,6 +425,19 @@ class ExcelActions(QObject):
             return
 
         def planned(plan):
+            if plan.best_effort:
+                from document_excel.presentation.dialogs import CopySaveDialog
+
+                dialog = CopySaveDialog(
+                    plan, self.document_target(plan, case, profile), self.window, in_place=True
+                )
+                if dialog.exec():
+                    QTimer.singleShot(
+                        0, self.window, lambda: self.write_batch_plan(plan, case, profile, in_place=True)
+                    )
+                else:
+                    QTimer.singleShot(0, self.window, self.next_batch_export)
+                return
             if ExportDialog(plan, self.window).exec():
                 QTimer.singleShot(0, self.window, lambda: self.write_batch_plan(plan, case, profile))
             else:
@@ -377,10 +459,12 @@ class ExcelActions(QObject):
         self.window.refresh_cases()
         QTimer.singleShot(0, self.window, self.next_batch_export)
 
-    def write_batch_plan(self, plan, case, profile):
+    def write_batch_plan(self, plan, case, profile, selected_target=None, *, in_place=False):
         self.batch_case = case
 
         def done(path):
+            if in_place:
+                self.adopt_document_path(case, path)
             case.output_path = path
             case.status = "Excel сохранён"
             self.window.last_result = path
@@ -390,7 +474,11 @@ class ExcelActions(QObject):
                 self.window.refresh_form()
 
         def worker_function(_c, _p):
-            target = self.window.batch_export_folder / self.filenames.generate(
+            if in_place:
+                return self.window.workbooks.update_existing(
+                    plan, case, profile, new_name=self.document_filename(case, profile)
+                )
+            target = selected_target or self.window.batch_export_folder / self.filenames.generate(
                 case.formatted_name, preserve=True, pattern=self.window.settings.filename_pattern
             )
             return self.write_target(plan, target, case, profile, True)

@@ -18,8 +18,7 @@ from document_excel.domain.models import Address, FieldEvidence, FieldStatus, Re
 from document_excel.infrastructure.digital_verification import synthetic_digital_images
 from document_excel.infrastructure.excel import create_demo_template, file_hash
 from document_excel.infrastructure.storage import Settings, SettingsRepository
-from document_excel.presentation.components import ConfirmDialog
-from document_excel.presentation.dialogs import ExportDialog
+from document_excel.presentation.dialogs import CopySaveDialog
 from document_excel.presentation.main_window import MainWindow
 from document_excel.presentation.theme import apply_theme
 
@@ -151,19 +150,15 @@ def main():
     wait_for(lambda: window.viewer_panel.isVisible() and window.review_form.isVisible())
     app.processEvents()
     window.grab().save(str(output / "03-review.png"))
-    ConfirmDialog.ask = staticmethod(lambda *args: True)
 
     def accept_export(dialog):
-        dialog.confirm.setChecked(True)
-        dialog.image_confirm.setChecked(True)
-        dialog.clear_confirm.setChecked(True)
-        dialog.preserved_confirm.setChecked(True)
-        dialog.clear_contacts.setChecked(True)
+        dialog.show()
+        app.processEvents()
         dialog.grab().save(str(output / "04-preview.png"))
         dialog.accept()
         return QDialog.DialogCode.Accepted
 
-    ExportDialog.exec = accept_export
+    CopySaveDialog.exec = accept_export
     QFileDialog.getSaveFileName = lambda *args, **kwargs: (args[2], "")
     window.primary_button.click()
     wait_for(lambda: case.output_path is not None or bool(errors))
@@ -184,7 +179,9 @@ def main():
         "document": result["Дог."]["G19"].value == "0000001",
         "photos_plus_logo": len(result["Пасп Доп Данные"]._images) == 3,
         "old_phone_cleared": result["Дог."]["D7"].value is None,
-        "original_unchanged": file_hash(source) == original_hash,
+        "original_updated_in_place": case.output_path.parent == source.parent
+        and not source.exists()
+        and file_hash(case.output_path) != original_hash,
     }
     result.close()
     report = {

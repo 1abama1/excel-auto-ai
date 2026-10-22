@@ -80,18 +80,19 @@ def test_gui_batch_export_two_clients_separate_files(window, qtbot, monkeypatch,
     assert case.output_path.exists() and second.output_path.exists()
 
 
-def test_missing_registration_opens_manual_dialog_after_ocr(window, qtbot, monkeypatch):
+def test_missing_registration_does_not_interrupt_ocr_review(window, qtbot, monkeypatch):
     from document_excel.application.workflows import RecognitionOutput
 
     called = []
     monkeypatch.setattr(window.case_actions, "address_dialog", lambda *args, **kwargs: called.append(True))
     result = RecognitionOutput([], "kg_id", [], False, 0.1)
     window.case_actions.ocr_completed([(window.current_case.id, result, "")])
-    qtbot.waitUntil(lambda: bool(called), timeout=1000)
+    qtbot.wait(50)
+    assert not called
     assert not window.current_case.data.registration_address.display()
 
 
-def test_digital_pending_result_keeps_review_visible_after_finished_signal(
+def test_unmatched_sides_are_editable_and_use_one_final_summary(
     window, qtbot, tmp_path, monkeypatch
 ):
     from types import SimpleNamespace
@@ -118,10 +119,12 @@ def test_digital_pending_result_keeps_review_visible_after_finished_signal(
     window.case_actions.start_ocr()
     qtbot.waitUntil(lambda: window.active_worker is None and not window.background_workers, timeout=10000)
     qtbot.wait(30)
-    assert window.current_case.pending_identity and not window.current_case.data.full_name
+    assert not window.current_case.pending_identity
+    assert window.current_case.identity_status == "unverified"
+    assert window.current_case.data.full_name
     assert window.current_step == 2 and window.review_form.isVisible()
     assert window.review_form.fields["full_name"].editor.text() == "Синтетиков Пример Тестович"
-    assert window.review_form.fields["surname"].editor.isReadOnly()
+    assert not window.review_form.fields["surname"].editor.isReadOnly()
 
 
 @pytest.mark.parametrize("legacy_auto_ocr", [False, True])

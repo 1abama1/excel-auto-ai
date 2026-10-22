@@ -267,6 +267,20 @@ class PackageEditor:
             cell.insertBefore(node, cell.firstChild)
         self.parts[path] = encoded(doc)
 
+    def clear_formula_caches(self, targets):
+        """Drop stale identity caches in mapped cells; keep formula text and all other cells."""
+        by_sheet: dict[str, set[str]] = {}
+        for sheet, cell in targets:
+            by_sheet.setdefault(sheet, set()).add(cell)
+        for sheet, cells in by_sheet.items():
+            path = self.sheets[sheet]
+            doc = document(self.parts[path])
+            for cell in doc.getElementsByTagNameNS(MAIN, "c"):
+                if cell.getAttribute("r") in cells and elements(cell, "f"):
+                    for value in list(elements(cell, "v")):
+                        cell.removeChild(value)
+            self.parts[path] = encoded(doc)
+
     def scrub_personal_shared_strings(self):
         """Clear obsolete personal entries without renumbering shared strings.
 

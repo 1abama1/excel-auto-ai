@@ -56,7 +56,7 @@ class CaseActions(QObject):
         self.window.commit_edits()
         case = ClientCase(
             name=f"Клиент {len(self.window.batch.cases) + 1}",
-            workflow_mode=WorkflowMode.EXISTING_CONTRACT,
+            workflow_mode=WorkflowMode.BEST_EFFORT_UPDATE,
         )
         self.window.batch.cases.append(case)
         self.window.refresh_cases()
@@ -108,7 +108,7 @@ class CaseActions(QObject):
         self.window.case_ocr_texts.pop(source.id, None)
         if not self.window.batch.cases:
             self.window.batch.cases.append(
-                ClientCase(name="Клиент 1", workflow_mode=WorkflowMode.EXISTING_CONTRACT)
+                ClientCase(name="Клиент 1", workflow_mode=WorkflowMode.BEST_EFFORT_UPDATE)
             )
         if selected_case is source:
             selected_case = self.window.batch.cases[0]
@@ -238,8 +238,7 @@ class CaseActions(QObject):
         dialog.deleteLater()
         if accepted and self.window.current_case is case and not self.window.closing:
             self.window.select_case(self.window.batch.cases.index(case))
-            if self.window.can_recognize():
-                QTimer.singleShot(0, self.window, self.start_ocr)
+            self.window.go_step(0)
 
     def capture_directory(self):
         settings = self.window.settings
@@ -770,6 +769,7 @@ class CaseActions(QObject):
                 )
         if (
             current_succeeded
+            and self.window.current_case.workflow_mode != WorkflowMode.BEST_EFFORT_UPDATE
             and not self.window.current_case.pending_identity
             and not self.window.current_case.data.registration_address.display()
             and self.window.current_case.registration_status != RegistrationStatus.NOT_PRESENT
@@ -1080,6 +1080,9 @@ class CaseActions(QObject):
                 return
         self.window.commit_edits()
         case = self.window.current_case
+        if case.workflow_mode == WorkflowMode.BEST_EFFORT_UPDATE:
+            self.window.excel_actions.export_current()
+            return
         old_status = case.registration_status
         if (
             case.data.registration_address.display()
@@ -1120,7 +1123,7 @@ class CaseActions(QObject):
         self.window.refresh_form()
         self.window.refresh_cases()
         self.window.go_step(3)
-        if case.workflow_mode == WorkflowMode.EXISTING_CONTRACT:
+        if case.workflow_mode.updates_existing:
             self.window.go_step(2)
             QTimer.singleShot(0, self.window, self.window.excel_actions.export_current)
 
@@ -1145,7 +1148,7 @@ class CaseActions(QObject):
             self.window.case_ocr_texts.clear()
             self.window.last_result = None
             self.window.batch = DocumentBatch(
-                cases=[ClientCase(name="Клиент 1", workflow_mode=WorkflowMode.EXISTING_CONTRACT)]
+                cases=[ClientCase(name="Клиент 1", workflow_mode=WorkflowMode.BEST_EFFORT_UPDATE)]
             )
             self.window.select_case(0)
             self.window.case_raw_edits.clear()

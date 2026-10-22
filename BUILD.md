@@ -1,3 +1,57 @@
+# Дополнительный выпуск одним EXE — 20.10.2026
+
+**`dist-onefile/DocumentExcel-current.exe`** — текущая версия приложения в том же формате, что прежний `dist-onefile/DocumentExcel.exe`. Предыдущий EXE сохранён. Размер нового файла — **367 609 098 байт** (350,58 MiB), SHA256: `0868967727f5be9076cd139a59488c95926c74fb9db09eee8e4fbfcc0febf119`. Для переноса достаточно одного EXE; при первой подготовке автоматически устанавливаются закреплённые Paddle CPU wheels. Подробности: [ONEFILE_WINDOWS](docs/ONEFILE_WINDOWS.md).
+
+```powershell
+dist-renamed\DocumentExcel\runtime\python.exe scripts/build_onefile.py --base dist-renamed/DocumentExcel --output dist-onefile/DocumentExcel-current.exe --work build/onefile-current
+```
+
+Включены текущие исходники с обновлением выбранного XLSX и переименованием по ФИО и дате. `Launch.cmd` продолжает использовать ранее проверенную папочную поставку; дополнительный EXE запускается непосредственно.
+
+# Обновление: тот же файл с именем по ФИО и дате — 20.10.2026
+
+По последнему уточнению выбранный XLSX обновляется и переименовывается в **`ФИО DD.MM.YYYY.xlsx`**. Папка сохраняется, постоянная копия не создаётся. При отсутствии имени используется `Договор DD.MM.YYYY.xlsx`; коллизии получают `(2)`, `(3)` без перезаписи другого файла. Повторное сохранение не нумерует текущий файл заново. Дата берётся в момент сохранения.
+
+GUI показывает новое имя в единственной сводке, а после успеха переключает путь текущего документа на новое имя. Проверенный временный XLSX готовится заранее; затем исходный файл перемещается без перезаписи занятого имени и заменяется проверенным результатом. При ошибке записи выполняется возврат прежнего имени. Если возврат тоже заблокирован, программа сообщает путь, где остался документ. Переименование и замена — две файловые операции; единая атомарность обеих не заявляется.
+
+Запуск актуальной Windows x64 CPU-поставки: **`dist-renamed/DocumentExcel/DocumentExcel.cmd`**. `Launch.cmd` использует её через `current-build.txt`. Ниже — история предыдущих вариантов поведения.
+
+Проверенная команда сборки актуального выпуска:
+
+```powershell
+$env:PYTHONPATH = "$PWD/src"
+$env:PYTHONUTF8 = '1'
+dist-inplace\DocumentExcel\runtime\python.exe scripts/package_cpu_windows.py --base dist-inplace/DocumentExcel --output dist-renamed/DocumentExcel --packages dist-inplace/DocumentExcel/runtime/Lib/site-packages --models models/rapidocr --release inplace-rename-2026-10-20
+```
+
+# Текущая поставка с обновлением выбранного XLSX — 20.10.2026
+
+Запуск: **`dist-inplace/DocumentExcel/DocumentExcel.cmd`**. Windows x64, Python 3.12, RapidOCR/PaddleOCR CPU и локальные модели включены. Переносится вся папка. `Launch.cmd` выбирает её через `current-build.txt`.
+
+```powershell
+$env:PYTHONPATH = "$PWD/src"
+dist-simplified\DocumentExcel\runtime\python.exe scripts/package_cpu_windows.py --base dist-simplified/DocumentExcel --output dist-inplace/DocumentExcel --packages dist-simplified/DocumentExcel/runtime/Lib/site-packages --models models/rapidocr --release inplace-update-2026-10-20
+```
+
+Результат записывается в выбранный пользователем Excel после проверки временного XLSX. Имя и папка не меняются, новая копия договора не создаётся. Сборщик требует новый каталог; прежние поставки остаются доступными. Текущий отчёт — в начале TEST_REPORT.md.
+
+Ниже — история предыдущих поставок.
+
+# Текущая упрощённая поставка — 20.10.2026
+
+Windows x64 CPU: **`dist-simplified/DocumentExcel/DocumentExcel.cmd`**. Переносится вся папка `DocumentExcel`; Python 3.12, Qt, RapidOCR/PaddleOCR CPU и локальные модели включены. Установка и сеть при обычном запуске не требуются.
+
+Воспроизводимая сборка из имеющегося проверенного runtime:
+
+```powershell
+$env:PYTHONPATH = "$PWD/src"
+dist-contract\DocumentExcel\runtime\python.exe scripts/package_cpu_windows.py --base dist-contract/DocumentExcel --output dist-simplified/DocumentExcel --packages dist-contract/DocumentExcel/runtime/Lib/site-packages --models models/rapidocr --release best-effort-2026-10-20
+```
+
+Сборщик требует новый каталог результата. Старые поставки не заменяются. `Launch.cmd` выбирает новую поставку через `current-build.txt`. Проверки текущего выпуска записаны в начале TEST_REPORT.md. Это автономная папка с командой запуска, без подписи и установщика; проверка на отдельной чистой Windows 11 не выполнялась.
+
+Ниже — исторические варианты упаковки; они не обозначают текущую версию.
+
 # Сборка
 
 ## Текущий готовый договор — 20.10.2026

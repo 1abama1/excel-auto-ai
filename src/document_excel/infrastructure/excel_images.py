@@ -18,7 +18,7 @@ from openpyxl.xml.functions import tostring
 from PIL import Image, ImageFont
 
 from document_excel.domain.errors import AppError
-from document_excel.domain.models import ClientCase, DocumentSide
+from document_excel.domain.models import ClientCase, DocumentSide, WorkflowMode
 from document_excel.infrastructure.document_images import selected_image
 from document_excel.infrastructure.xlsx_package import (
     MAIN,
@@ -182,6 +182,15 @@ class PhotoExportPlan:
     conflicts: list[str] = field(default_factory=list)
     conflict_previews: list[bytes] = field(default_factory=list, repr=False)
     exception_used: bool = False
+    preserved_ids: set[str] = field(default_factory=set)
+    preserved_names: list[str] = field(default_factory=list)
+    missing_names: list[str] = field(default_factory=list)
+    previous_images: list[tuple[str, bytes]] = field(default_factory=list, repr=False)
+
+    def clear_missing(self):
+        self.remove_ids.update(self.preserved_ids)
+        self.preserved_ids.clear()
+        self.preserved_names.clear()
 
 
 class ExcelImageEmbedder:
@@ -202,6 +211,21 @@ class ExcelImageEmbedder:
         drawing_path = resolve(path, target.getAttribute("Target"))
         return drawing_path, document(editor.parts[drawing_path])
 
+    @staticmethod
+    def preview(editor, drawing_path, node) -> bytes:
+        blips = node.getElementsByTagNameNS(ART, "blip")
+        links_path = rel_path(drawing_path)
+        if not blips or links_path not in editor.parts:
+            return b""
+        rid = blips[0].getAttributeNS(REL, "embed")
+        links = document(editor.parts[links_path])
+        link = next(
+            (n for n in elements(links.documentElement, "Relationship") if n.getAttribute("Id") == rid), None
+        )
+        if link is None or link.getAttribute("TargetMode") == "External":
+            return b""
+        return editor.parts.get(resolve(drawing_path, link.getAttribute("Target")), b"")
+
     def plan(self, editor: PackageEditor, book, case: ClientCase, profile) -> PhotoExportPlan | None:
         if not profile.photo_sheet:
             return None
@@ -211,15 +235,24 @@ class ExcelImageEmbedder:
             raise AppError("Лист фотографий защищён. Используйте разрешённую копию шаблона.")
         tag = hashlib.sha256(case.id.encode()).hexdigest()[:20]
         geometry = SheetGeometry(sheet)
+        best = case.workflow_mode == WorkflowMode.BEST_EFFORT_UPDATE
         insertions = []
         for side, area in TARGETS.items():
-            sources = [s for s in case.images if s.role == side]
+            sources = [
+                s for s in case.images if s.role == side and (not best or s.id not in case.side_proposals)
+            ]
             if len(sources) > 1:
+                if best:
+                    continue  # Ambiguous photos are omitted, never guessed.
                 raise AppError(
                     "Выбрано несколько фотографий одной стороны. Уточните стороны на шаге загрузки."
                 )
             if not sources:
-                if profile.photos_required and not (profile.allow_photo_exception and case.photo_exception):
+                if (
+                    not best
+                    and profile.photos_required
+                    and not (profile.allow_photo_exception and case.photo_exception)
+                ):
                     raise AppError(
                         "Для договора нужны лицевая и оборотная фотографии. Добавьте их или укажите разрешённое исключение."
                     )
@@ -250,12 +283,29 @@ class ExcelImageEmbedder:
                 if node.localName not in {"twoCellAnchor", "oneCellAnchor", "absoluteAnchor"}:
                     continue
                 bounds = geometry.anchor_bounds(node)
-                intersects = any(
-                    bounds[0] < b[2] and b[0] < bounds[2] and bounds[1] < b[3] and b[1] < bounds[3]
-                    for b in (geometry.bounds(a) for a in TARGETS.values())
-                )
-                if not intersects:
+                overlaps = [
+                    side
+                    for side, area in TARGETS.items()
+                    if (
+                        bounds[0] < geometry.bounds(area)[2]
+                        and geometry.bounds(area)[0] < bounds[2]
+                        and bounds[1] < geometry.bounds(area)[3]
+                        and geometry.bounds(area)[1] < bounds[3]
+                    )
+                ]
+                if not overlaps:
                     continue
+                if best:
+                    allowed = geometry.bounds("A1:K24")
+                    if len(overlaps) != 1 or not (
+                        allowed[0] <= bounds[0]
+                        and allowed[1] <= bounds[1]
+                        and bounds[2] <= allowed[2]
+                        and bounds[3] <= allowed[3]
+                    ):
+                        raise AppError(
+                            "Рисунок выходит за разрешённую область фотографии. Скорректируйте его расположение в копии Excel."
+                        )
                 properties = node.getElementsByTagNameNS(DRAW, "cNvPr")
                 if not properties or not node.getElementsByTagNameNS(DRAW, "pic"):
                     raise AppError(
@@ -263,9 +313,24 @@ class ExcelImageEmbedder:
                     )
                 name = properties[0].getAttribute("name")
                 identifier = properties[0].getAttribute("id")
+                if best:
+                    plan.previous_images.append(
+                        (
+                            "Лицевая сторона" if overlaps[0] == DocumentSide.FRONT else "Оборотная сторона",
+                            self.preview(editor, drawing_path, node),
+                        )
+                    )
+                if best and overlaps[0] not in {photo.role for photo in insertions}:
+                    plan.preserved_ids.add(identifier)
+                    plan.missing_names.append(
+                        "Лицевая фотография" if overlaps[0] == DocumentSide.FRONT else "Оборотная фотография"
+                    )
+                    if name.startswith(f"DocumentExcel|{tag}|"):
+                        plan.preserved_names.append(name)
+                    continue
                 if name.startswith(f"DocumentExcel|{tag}|"):
                     plan.remove_ids.add(identifier)
-                elif name.startswith("DocumentExcel|") and case.workflow_mode.value != "EXISTING_CONTRACT":
+                elif name.startswith("DocumentExcel|") and not case.workflow_mode.updates_existing:
                     if not name.startswith(f"DocumentExcel|{tag}|"):
                         raise AppError(
                             "В области фотографий есть снимки другого клиента. Выберите исходный чистый шаблон."
@@ -411,7 +476,9 @@ class ExcelImageEmbedder:
         # Delete only unreferenced media owned by this app/client. Original
         # logos and media shared with another drawing are always preserved.
         for media in list(editor.parts):
-            if media not in removed_media and not media.startswith(f"xl/media/document-excel-{plan.case_tag}-"):
+            if media not in removed_media and not media.startswith(
+                f"xl/media/document-excel-{plan.case_tag}-"
+            ):
                 continue
             filename = Path(media).name.encode()
             if not any(filename in data for name, data in editor.parts.items() if name.endswith(".rels")):
@@ -436,7 +503,7 @@ class ExcelImageEmbedder:
                 if n.getAttribute("name").startswith(f"DocumentExcel|{plan.case_tag}|")
             ]
         )
-        if sorted(names) != sorted(p.name for p in plan.insertions):
+        if sorted(names) != sorted([p.name for p in plan.insertions] + plan.preserved_names):
             raise AppError("Проверка встроенных фотографий не пройдена.")
         for photo in plan.insertions:
             media = f"xl/media/document-excel-{plan.case_tag}-{photo.role.value.lower()}.png"

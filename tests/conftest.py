@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from document_excel.domain.models import Address, ClientCase, ClientData, RegistrationStatus
+from document_excel.domain.models import Address, ClientCase, ClientData, RegistrationStatus, WorkflowMode
 from document_excel.infrastructure.excel import create_demo_template, legacy_profile
 
 
@@ -20,6 +20,7 @@ def profile():
 @pytest.fixture
 def case():
     value = ClientCase(
+        workflow_mode=WorkflowMode.TEMPLATE_GENERATION,
         data=ClientData(
             full_name="SYNTHETIC TEST",
             personal_identifier="00123456789012",

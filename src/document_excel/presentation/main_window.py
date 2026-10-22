@@ -39,7 +39,13 @@ from document_excel.domain.models import (
     data_value,
 )
 from document_excel.infrastructure.document_images import DocumentCaptureController
-from document_excel.infrastructure.excel import TemplateRegistry, WorkbookService, legacy_profile, readiness
+from document_excel.infrastructure.excel import (
+    TemplateRegistry,
+    WorkbookService,
+    legacy_profile,
+    readiness,
+    recognition_warnings,
+)
 from document_excel.infrastructure.ocr_factory import create_engine
 from document_excel.infrastructure.preprocessing import detect_document_region, load_image
 from document_excel.infrastructure.storage import HistoryRepository, SettingsRepository
@@ -90,7 +96,7 @@ class MainWindow(QMainWindow):
         self.capture_controller = DocumentCaptureController(self.case_service)
         self.profile = legacy_profile()
         self.batch = DocumentBatch(
-            cases=[ClientCase(name="Клиент 1", workflow_mode=WorkflowMode.EXISTING_CONTRACT)]
+            cases=[ClientCase(name="Клиент 1", workflow_mode=WorkflowMode.BEST_EFFORT_UPDATE)]
         )
         self.current_case = self.batch.cases[0]
         self.active_worker: Worker | None = None
@@ -108,6 +114,8 @@ class MainWindow(QMainWindow):
         self.pending_highlight = None
         self.ocr_diagnostic = None
         self._committing = False
+        self._refreshing = False
+        self._changing_case = False
         self.undo_stack = QUndoStack(self)
         self.setWindowTitle("Документ → Excel")
         self.setWindowIcon(QIcon(str(files("document_excel").joinpath("resources/app.ico"))))
@@ -161,14 +169,47 @@ class MainWindow(QMainWindow):
 
     def can_recognize(self):
         case = self.current_case
-        if case.workflow_mode == WorkflowMode.EXISTING_CONTRACT:
+        if case.workflow_mode.updates_existing:
             return bool(
                 case.template_path
                 and case.workbook_profile
                 and case.workbook_profile.get("field_mappings")
-                and len(case.images) >= 2
+                and len(case.images) >= 1
             )
         return bool(case.images)
+
+    def handle_dropped_files(self, paths):
+        if self.active_worker:
+            return
+        books = [p for p in paths if p.suffix.lower() == ".xlsx"]
+        images = [p for p in paths if p.suffix.lower() != ".xlsx"]
+        if len(books) > 1:
+            self.notice.setText("Перетащите один Excel-договор за раз.")
+            return
+        if books:
+            self.excel_actions.load_template(books[0])
+        if images:
+            if books:
+                # XLSX selection finishes first; no work is discarded while it is busy.
+                def add_later():
+                    if self.active_worker:
+                        QTimer.singleShot(50, self, add_later)
+                    else:
+                        self.case_actions.add_images(images)
+
+                QTimer.singleShot(0, self, add_later)
+            else:
+                self.case_actions.add_images(images)
+
+    def show_missing_fields(self):
+        warnings = recognition_warnings(self.current_case, self.profile)
+        self.message(
+            "Не удалось определить: "
+            + ", ".join(FIELD_LABELS[n] for n in warnings.missing_fields)
+            + "\nМожно заполнить эти сведения вручную или сохранить документ без них."
+            if warnings.missing_fields
+            else "Все используемые поля найдены. Сверьте значения с документом."
+        )
 
     def navigate(self, index):
         self.commit_edits()
@@ -185,6 +226,8 @@ class MainWindow(QMainWindow):
         if self.active_worker and index != 1:
             return
         self.commit_edits()
+        if index == 3 and self.current_case.workflow_mode == WorkflowMode.BEST_EFFORT_UPDATE:
+            index = 2
         self.current_step = index
         if index != 0 and self.notice.text().startswith(("Фото добавлены", "Фотографии добавлены")):
             self.notice.setText("")
@@ -199,7 +242,7 @@ class MainWindow(QMainWindow):
             button.setEnabled(not self.active_worker and i <= reached and i != 1)
         self.title_label.setText(
             [
-                "Создать договор по паспорту",
+                "Добавьте договор и паспорт",
                 "Распознаём документ…",
                 "Проверьте данные",
                 "Подготовьте Excel",
@@ -212,17 +255,18 @@ class MainWindow(QMainWindow):
                 "Обработка выполняется на этом компьютере",
                 "Сверьте значения с фотографиями и исправьте выделенные поля",
                 "Выберите шаблон и проверьте, куда попадут данные",
-                "Файл проверен после записи и сохранён в новой копии",
+                "Изменения проверены и сохранены в выбранный Excel-файл",
             ][index]
         )
         self.back_button.setVisible(index in (2, 3))
+        self.skip_ocr_button.setVisible(index == 0)
         self.primary_button.setText(
             [
                 "Распознать паспорт",
                 "Отменить распознавание",
-                "Создать договор",
+                "Сохранить договор",
                 "Сохранить Excel",
-                "Новый клиент",
+                "Новый документ",
             ][index]
         )
         self.primary_button.setEnabled(not self.active_worker and (index != 0 or self.can_recognize()))
@@ -231,7 +275,12 @@ class MainWindow(QMainWindow):
         self.footer_note.setText(f"{self.current_case.name} · {len(self.current_case.images)} фото")
         if index == 4:
             result = self.current_case.output_path
-            self.result_label.setText(str(result) if result else "Excel ещё не сохранён")
+            self.result_label.setText(result.name if result else "Excel ещё не сохранён")
+            self.result_summary.setText(
+                f"Обновлено {len(self.current_case.updated_fields)} полей. "
+                f"Без новых данных: {len(self.current_case.missing_fields)}."
+            )
+            self.result_missing.setVisible(bool(self.current_case.missing_fields))
             self.open_result_button.setEnabled(bool(result))
             self.open_folder_button.setEnabled(bool(result))
         QTimer.singleShot(0, self.viewer, self.viewer.fit)
@@ -241,7 +290,9 @@ class MainWindow(QMainWindow):
         actions = [
             self.case_actions.start_ocr,
             self.cancel_work,
-            self.case_actions.confirm_data,
+            self.excel_actions.export_current
+            if self.current_case.workflow_mode == WorkflowMode.BEST_EFFORT_UPDATE
+            else self.case_actions.confirm_data,
             self.excel_actions.export_current,
             self.case_actions.new_case,
         ]
@@ -279,7 +330,7 @@ class MainWindow(QMainWindow):
         self.refresh_cases()
 
     def apply_field_edit(self, field, value):
-        if self.active_worker or field in {"registration_address", "living_address"}:
+        if self.active_worker or self._refreshing or self._changing_case:
             return
         row = self.field_model.fields.index(field)
         if str(self.field_model.data(self.field_model.index(row, 1)) or "") == value.strip():
@@ -336,6 +387,14 @@ class MainWindow(QMainWindow):
         self.queue_badge.setText(f"Клиентов в очереди: {len(self.batch.cases)}")
 
     def select_case(self, row):
+        self.commit_edits()
+        self._changing_case = True
+        try:
+            self._select_case(row)
+        finally:
+            self._changing_case = False
+
+    def _select_case(self, row):
         if not 0 <= row < len(self.batch.cases):
             return
         self.commit_edits()
@@ -372,6 +431,15 @@ class MainWindow(QMainWindow):
         self.go_step(step)
 
     def refresh_form(self):
+        if self._refreshing:
+            return
+        self._refreshing = True
+        try:
+            self._refresh_form()
+        finally:
+            self._refreshing = False
+
+    def _refresh_form(self):
         if not hasattr(self, "field_model"):
             return
         self.field_model.refresh()
@@ -386,7 +454,12 @@ class MainWindow(QMainWindow):
         self.identity_status.setText("Подтвердить принадлежность фотографий")
         self.identity_status.setToolTip(self.current_case.identity_message)
         self.review_form.refresh(
-            display_case, display_model, self.profile.required_fields, preview_only=bool(preview_case)
+            display_case,
+            display_model,
+            []
+            if self.current_case.workflow_mode == WorkflowMode.BEST_EFFORT_UPDATE
+            else self.profile.required_fields,
+            preview_only=bool(preview_case),
         )
         self.document_type.blockSignals(True)
         self.document_type.setCurrentIndex(
@@ -417,18 +490,13 @@ class MainWindow(QMainWindow):
         )
         self.registration_notice.setVisible(no_address)
         self.registration_actions.setVisible(no_address)
-        filled = sum(bool(data_value(display_case.data, f)) for f in self.profile.required_fields)
-        self.completeness.setText(
-            ("Распознано: " if preview_case else "Обязательные поля: ")
-            + f"{filled} из {len(self.profile.required_fields)}"
-        )
-        issues = readiness(self.current_case, self.profile, require_confirmation=False)
+        warnings = recognition_warnings(display_case, self.profile)
+        self.completeness.setText(f"Найдено: {len(warnings.found_fields)}")
         self.review_summary.setText(
-            f"Требуют внимания: {len(issues)}. Показать первое поле"
-            if issues
-            else "Все обязательные поля заполнены. Сверьте их с документом."
+            f"Распознано {len(warnings.found_fields)} из {len(warnings.found_fields) + len(warnings.missing_fields)} полей. "
+            f"Не найдено: {len(warnings.missing_fields)}. Можно исправить значения или сохранить договор."
         )
-        self.review_summary.setProperty("tone", "warning" if issues else "success")
+        self.review_summary.setProperty("tone", "warning" if warnings.missing_fields else "success")
         if preview_case:
             self.review_summary.setText(
                 "Данные распознаны и показаны для просмотра. Подтвердите принадлежность фотографий одному человеку, затем проверьте поля."
@@ -443,7 +511,7 @@ class MainWindow(QMainWindow):
             self.current_case.workbook_profile and self.current_case.workbook_profile.get("field_mappings")
         )
         self.contract_status.setText(
-            "Договор распознан. Можно продолжить · " + self.profile.name
+            "Файл открыт. Можно продолжить"
             if compatible
             else "Нужна однократная настройка в разделе «Дополнительно»"
             if template
@@ -453,6 +521,8 @@ class MainWindow(QMainWindow):
             self.contract_status.setText(
                 "Дополнительный режим заполнения шаблона: инструменты, цены и залог могут быть заменены."
             )
+        self.contract_button.setText("Заменить" if template else "Выбрать Excel")
+        self.skip_ocr_button.setEnabled(bool(template and compatible) and not self.active_worker)
         self.template_label.setText(template.name if template else "Выберите Excel-шаблон")
         self.profile_label.setText("Профиль: " + self.profile.name)
         self.photo_panel.refresh(display_case, self.profile)
@@ -760,7 +830,7 @@ class MainWindow(QMainWindow):
     def on_progress(self, value, text):
         if self.current_step == 1:
             self.progress.setRange(0, 0)
-            self.substage_label.setText(text)
+            self.substage_label.setText("Распознаём документ…")
         else:
             self.progress.setRange(0, 100)
             self.progress.setValue(value)
@@ -793,6 +863,8 @@ class MainWindow(QMainWindow):
             self.confirm_button,
             self.document_type,
             self.template_button,
+            self.contract_button,
+            self.skip_ocr_button,
             self.review_form,
             self.queue_table,
             self.dropzone,

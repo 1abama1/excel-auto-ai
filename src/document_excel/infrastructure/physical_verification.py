@@ -16,6 +16,7 @@ from document_excel.domain.models import (
     FieldStatus,
     RegistrationStatus,
     SourceImage,
+    WorkflowMode,
     new_id,
 )
 from document_excel.infrastructure.excel import WorkbookService, create_demo_template, legacy_profile
@@ -131,7 +132,7 @@ def synthetic_plastic_images(output: Path, controls: dict | None = None) -> list
 def run_physical_self_test(output: Path, settings: Settings | None = None) -> dict:
     images = [SourceImage(path=p) for p in synthetic_plastic_images(output)]
     result = RecognitionService(settings or Settings()).run(images, threading.Event(), lambda *_: None)
-    case = ClientCase(images=images, mrz_reports=result.mrz_reports)
+    case = ClientCase(workflow_mode=WorkflowMode.TEMPLATE_GENERATION, images=images, mrz_reports=result.mrz_reports)
     for source in images:
         source.role = result.sides.get(source.id, source.role)
     apply_candidates(case, result.candidates, result.document_type, result.label_seen)

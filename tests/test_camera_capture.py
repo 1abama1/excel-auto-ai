@@ -341,6 +341,8 @@ def test_camera_ui_to_real_ocr_and_embedded_excel(qtbot, image_factory, template
 
     QTimer.singleShot(150, take_both)
     window.case_actions.capture_documents()
+    assert window.current_case.data.personal_identifier is None
+    window.case_actions.start_ocr()  # Capture returns to upload; OCR is an explicit action.
     qtbot.waitUntil(
         lambda: bool(window.current_case.data.personal_identifier) and not window.background_workers,
         timeout=20000,

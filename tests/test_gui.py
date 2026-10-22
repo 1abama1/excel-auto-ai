@@ -135,7 +135,7 @@ def test_incomplete_export_and_confirmation_blocked(window, monkeypatch):
     assert errors
     assert not window.current_case.confirmed
     window.excel_actions.export_current()
-    assert errors[-1] == "Выберите Excel-шаблон."
+    assert errors[-1] == "Выберите Excel-договор."
 
 
 def test_confirmation_invalidated_by_manual_edit(window, case, monkeypatch):

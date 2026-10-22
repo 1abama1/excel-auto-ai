@@ -184,15 +184,15 @@ class StatusIndicator(QLabel):
 
     def update_status(self, status: FieldStatus, required: bool = False):
         text, tone = {
-            FieldStatus.MISSING: ("Нет данных", "error" if required else "muted"),
-            FieldStatus.NOT_RECOGNIZED: ("Не распознано", "warning"),
-            FieldStatus.NOT_PRESENT: ("Не предусмотрено", "muted"),
-            FieldStatus.INVALID: ("Ошибка", "error"),
-            FieldStatus.REVIEW: ("Проверить", "warning"),
+            FieldStatus.MISSING: ("Не найдено", "muted"),
+            FieldStatus.NOT_RECOGNIZED: ("Не найдено", "muted"),
+            FieldStatus.NOT_PRESENT: ("Не найдено", "muted"),
+            FieldStatus.INVALID: ("Проверьте", "warning"),
+            FieldStatus.REVIEW: ("Проверьте", "warning"),
             FieldStatus.VALID: ("Найдено", "success"),
-            FieldStatus.CONFLICT: ("Конфликт", "error"),
-            FieldStatus.MANUALLY_CORRECTED: ("Вручную", "info"),
-            FieldStatus.CONFIRMED: ("Подтверждено", "success"),
+            FieldStatus.CONFLICT: ("Проверьте", "warning"),
+            FieldStatus.MANUALLY_CORRECTED: ("Изменено вручную", "info"),
+            FieldStatus.CONFIRMED: ("Найдено", "success"),
         }[status]
         self.setText(text)
         self.setProperty("tone", tone)
@@ -432,12 +432,12 @@ class ReviewField(QWidget):
         self.status_label = StatusIndicator()
         top.addWidget(self.status_label)
         box.addLayout(top)
-        self.editor = DateField() if name in DATE_FIELDS else TextField("Не указано")
+        self.editor = DateField() if name in DATE_FIELDS else TextField("Не удалось определить")
         self.editor.setAccessibleName(FIELD_LABELS[name])
         self.editor.installEventFilter(self)
         self.editor.editingFinished.connect(lambda: self.value_edited.emit(name, self.editor.text()))
+        self.editor.textEdited.connect(lambda value: self.value_edited.emit(name, value))
         if name in {"registration_address", "living_address"}:
-            self.editor.setReadOnly(True)
             action = QAction(icon("next"), "Открыть редактор адреса", self.editor)
             action.triggered.connect(lambda: self.address_requested.emit(name))
             self.editor.addAction(action, QLineEdit.ActionPosition.TrailingPosition)
@@ -484,20 +484,28 @@ class ReviewField(QWidget):
     def choose_representation(self, index):
         value = getattr(self._evidence, "original_latin" if index else "original_cyrillic", None)
         if value:
+            cursor = self.editor.cursorPosition()
+        if self.editor.text() != value:
             self.editor.setText(value)
+        if self.editor.hasFocus():
+            self.editor.setCursorPosition(cursor)
             self.value_edited.emit(self.name, value)
 
     def refresh(self, value: str, evidence: FieldEvidence, required: bool):
         self._evidence = evidence
         self.editor.blockSignals(True)
-        self.editor.setText(value)
+        cursor = self.editor.cursorPosition()
+        if self.editor.text() != value:
+            self.editor.setText(value)
+        if self.editor.hasFocus():
+            self.editor.setCursorPosition(cursor)
         self.editor.setToolTip(value)
         self.editor.blockSignals(False)
         status = evidence.status
         if value and status == FieldStatus.MISSING:
             status = FieldStatus.REVIEW
         self.status_label.update_status(status, required)
-        self.editor.setProperty("invalid", status == FieldStatus.INVALID or required and not value)
+        self.editor.setProperty("invalid", required and (status == FieldStatus.INVALID or not value))
         self.editor.style().unpolish(self.editor)
         self.editor.style().polish(self.editor)
         side = ""
@@ -517,7 +525,7 @@ class ReviewField(QWidget):
             if manual(evidence)
             else f"Источник: {side}"
             if side
-            else "Нужно заполнить"
+            else "Не удалось определить"
             if not value
             else "Сверьте с документом"
         )
@@ -563,7 +571,7 @@ class ReviewField(QWidget):
             or evidence.manual_conflict
             else ""
         )
-        self.validation.setVisible(bool(self.validation.text()))
+        self.validation.setVisible(required and bool(self.validation.text()))
 
 
 class CollapsibleSection(QFrame):
@@ -668,6 +676,18 @@ class ReviewForm(QScrollArea):
 
     def refresh(self, case, model, required_fields, *, preview_only=False):
         self.preview_only = preview_only
+        simple = case.workflow_mode.value == "BEST_EFFORT_UPDATE"
+        mapped = {m["field"].split(".")[0] for m in (case.workbook_profile or {}).get("field_mappings", [])}
+        if simple:
+            mapped.discard("object_address")
+        if "full_name" in mapped:
+            mapped.update({"surname", "first_name", "patronymic"})
+        for name, widget in self.fields.items():
+            widget.setVisible(not simple or name in mapped)
+        for section in self.sections:
+            section.setVisible(
+                not simple or any(not f.isHidden() for f in self.fields.values() if section.isAncestorOf(f))
+            )
         for name, widget in self.fields.items():
             if widget.editor.property("baseReadOnly") is None:
                 widget.editor.setProperty("baseReadOnly", widget.editor.isReadOnly())

@@ -1,6 +1,12 @@
 # Один EXE: установка и запуск
 
-Готовый файл: `dist-onefile/DocumentExcel.exe`, Windows 10/11 **x64**.
+Текущий дополнительный билд: **`dist-onefile/DocumentExcel-current.exe`**,
+Windows 10/11 **x64**. Он содержит актуальное приложение с тремя этапами
+«Загрузка → Проверка → Готово». Выбранный XLSX обновляется и переименовывается
+в `ФИО DD.MM.YYYY.xlsx` в той же папке, без постоянной копии. Недостающие
+реквизиты и отсутствие второй фотографии не блокируют сохранение.
+Предыдущий `dist-onefile/DocumentExcel.exe` сохранён отдельно.
+
 На другой компьютер достаточно перенести только этот EXE. Системный Python,
 uv, pip, NVIDIA, CUDA и ручные команды не нужны.
 
@@ -65,12 +71,12 @@ EXE занимает примерно **350 MiB**. Рекомендуется н
 Из проверенного локального runtime:
 
 ```powershell
-dist-digital/DocumentExcel/runtime/python.exe scripts/build_onefile.py
+dist-renamed/DocumentExcel/runtime/python.exe scripts/build_onefile.py --base dist-renamed/DocumentExcel --output dist-onefile/DocumentExcel-current.exe --work build/onefile-current
 ```
 
-Вход — `dist-digital/DocumentExcel`; исходники bootstrap — `installer/`.
-Выход — один `dist-onefile/DocumentExcel.exe` и необязательный технический
-`DocumentExcel.build.json` с хешем. ZIP включён в EXE, отдельные файлы для
+Вход — `dist-renamed/DocumentExcel`; исходники bootstrap — `installer/`.
+Выход — один `dist-onefile/DocumentExcel-current.exe` и необязательный технический
+`DocumentExcel-current.build.json` с хешем. ZIP включён в EXE, отдельные файлы для
 распространения не нужны. После изменения только C# launcher допускается
 `--repack-launcher`; изменение Python provisioner требует пересборки core.
 

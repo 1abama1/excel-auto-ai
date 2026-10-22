@@ -65,7 +65,7 @@ def test_real_missing_registration(image_factory, engine_settings):
 def test_real_image_to_excel(image_factory, engine_settings, template, profile, tmp_path):
     source = SourceImage(path=image_factory())
     output = RecognitionService(engine_settings).run([source], threading.Event(), lambda *_args: None)
-    case = ClientCase(images=[source])
+    case = ClientCase(images=[source], template_path=template, workbook_profile=profile.model_dump(mode="json"))
     apply_candidates(case, output.candidates, output.document_type, output.label_seen)
     assert case.data.personal_identifier == "00123456789012"
     assert not any(e.status == FieldStatus.INVALID for e in case.evidence.values())

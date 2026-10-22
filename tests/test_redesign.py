@@ -108,7 +108,7 @@ def test_invalid_date_stays_visible_for_correction(redesigned_window, case):
     assert case.data.birth_date is None
     assert case.evidence["birth_date"].status == FieldStatus.INVALID
     assert field.editor.text() == "31.02.2000"
-    assert field.status_label.text() == "Ошибка"
+    assert field.status_label.text() == "Проверьте"
     assert field.validation.text()
     window.go_step(0)
     window.go_step(2)

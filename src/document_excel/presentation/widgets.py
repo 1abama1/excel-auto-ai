@@ -66,11 +66,7 @@ class FieldTableModel(QAbstractTableModel):
             return None
         field = self.fields[index.row()]
         value = self.raw_edits.get(field, data_value(self.case.data, field))
-        if (
-            field == "full_name"
-            and field not in self.raw_edits
-            and self.case.workflow_mode == WorkflowMode.EXISTING_CONTRACT
-        ):
+        if field == "full_name" and field not in self.raw_edits and self.case.workflow_mode.updates_existing:
             value = self.case.formatted_name
         evidence = self.case.evidence.get(field, FieldEvidence())
         if (
@@ -85,7 +81,7 @@ class FieldTableModel(QAbstractTableModel):
                 "first_name_latin",
                 "patronymic_cyrillic",
             }
-            and self.case.workflow_mode == WorkflowMode.EXISTING_CONTRACT
+            and self.case.workflow_mode.updates_existing
         ):
             value = PersonNameFormatter.format(value, preserve=evidence.source_method == "MANUAL_INPUT")
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
@@ -113,7 +109,7 @@ class FieldTableModel(QAbstractTableModel):
 
     def flags(self, index):
         flags = super().flags(index)
-        if index.column() == 1 and self.fields[index.row()] not in {"registration_address", "living_address"}:
+        if index.column() == 1:
             flags |= Qt.ItemFlag.ItemIsEditable
         return flags
 
@@ -141,7 +137,7 @@ class FieldTableModel(QAbstractTableModel):
             code_evidence.message = "Цифры после МКК отделены от органа выдачи, введённого пользователем."
             self.case.evidence["passport_department_code"] = code_evidence
         error = validate_field(field, value, self.pin_length) if value else None
-        # Invalid input is visible and blocks export; the last valid model value is cleared.
+        # Invalid input stays visible for correction; best-effort export skips it.
         evidence = self.case.evidence.get(field, FieldEvidence()).model_copy(deep=True)
         evidence.source = "ручной ввод"
         evidence.status = FieldStatus.INVALID if error else FieldStatus.MANUALLY_CORRECTED
@@ -188,7 +184,9 @@ class FieldTableModel(QAbstractTableModel):
                 )
         if name_field in {"surname", "first_name", "patronymic"}:
             full = self.case.evidence.get("full_name", FieldEvidence())
-            if not full.source.startswith("ручной"):
+            if self.case.workflow_mode == WorkflowMode.BEST_EFFORT_UPDATE or not full.source.startswith(
+                "ручной"
+            ):
                 self.case.data.full_name = (
                     " ".join(
                         filter(

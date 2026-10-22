@@ -7,7 +7,7 @@ import time
 from copy import deepcopy
 from datetime import UTC, datetime
 
-from document_excel.domain.models import ClientData, DocumentSide, FieldStatus, OcrRun
+from document_excel.domain.models import ClientData, DocumentSide, FieldStatus, OcrRun, WorkflowMode
 from document_excel.domain.resolution import manual
 
 
@@ -253,16 +253,51 @@ class OcrState:
             if new == connected:
                 break
             connected = new
+        conflicting = False
+        if case.workflow_mode == WorkflowMode.BEST_EFFORT_UPDATE:
+            # No shared identifier is ordinary for opposite sides. Contradictory
+            # identifiers or names still quarantine results from different people.
+            for field in (
+                "passport_number",
+                "personal_identifier",
+                "full_name",
+                "surname",
+                "first_name",
+                "birth_date",
+            ):
+                by_image: dict[str, set[str]] = {}
+                for candidate in candidates:
+                    if (
+                        candidate.source_image_id in identity
+                        and candidate.field_name == field
+                        and candidate.validation_status != FieldStatus.INVALID
+                        and not candidate.validation_errors
+                    ):
+                        by_image.setdefault(candidate.source_image_id, set()).add(
+                            candidate.normalized_value.casefold()
+                        )
+                values = list(by_image.values())
+                if any(
+                    not left & right for index, left in enumerate(values) for right in values[index + 1 :]
+                ):
+                    conflicting = True
+                    break
         token = identity_token(case)
         if case.identity_approved == token:
             case.identity_status = "user_confirmed"
+        elif conflicting:
+            case.identity_status = "review"
         elif len(connected) == len(primary):
             case.identity_status = "matched"
+        elif case.workflow_mode == WorkflowMode.BEST_EFFORT_UPDATE:
+            case.identity_status = "unverified"
         else:
             case.identity_status = "review"
         case.identity_message = (
             "Проверьте, что все фотографии принадлежат одному человеку."
             if case.identity_status == "review"
+            else "Стороны не удалось сопоставить по общему номеру; проверьте их в итоговой сводке."
+            if case.identity_status == "unverified"
             else "Принадлежность сторон сопоставлена; сверьте документ."
         )
 

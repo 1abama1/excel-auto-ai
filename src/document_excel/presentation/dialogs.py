@@ -25,6 +25,7 @@ from document_excel.domain.models import (
     FIELD_LABELS,
     Address,
     ContractData,
+    MissingValuePolicy,
     RegistrationStatus,
     ToolItem,
     parse_date,
@@ -640,6 +641,244 @@ class ExportDialog(QDialog):
             if self.clear_contacts.isChecked():
                 self.plan.clear_preserved_contacts()
             super().accept()
+
+
+class CopySaveDialog(QDialog):
+    """One final review, one client-wide decision, one save action."""
+
+    def __init__(self, plan, suggested, parent=None, *, in_place=False):
+        super().__init__(parent)
+        from pathlib import Path
+
+        self.plan = plan
+        self.in_place = in_place
+        self.suggested = Path(suggested)
+        self.target = self.suggested
+        self.automatic_name = True
+        self.setWindowTitle(
+            "Сохранить изменения в выбранный договор" if in_place else "Будет создана копия договора"
+        )
+        self.resize(640, 620)
+        outer = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        scroll.setWidget(body)
+        outer.addWidget(scroll)
+        self.summary = QLabel()
+        self.summary.setWordWrap(True)
+        layout.addWidget(self.summary)
+        if any("принадлежность фотографий" in message for message in plan.warnings.messages):
+            label = QLabel(
+                "Стороны не удалось сопоставить по общему номеру. Проверьте, что все показанные фотографии относятся к текущему клиенту. Нажатие кнопки сохранения подтверждает это."
+            )
+            label.setWordWrap(True)
+            layout.addWidget(label)
+        missing = QLabel(
+            "Не найдено: " + ", ".join(FIELD_LABELS[n] for n in plan.warnings.missing_fields)
+            if plan.warnings.missing_fields
+            else "Все используемые поля найдены."
+        )
+        missing.setWordWrap(True)
+        layout.addWidget(missing)
+        self.cleared = QLabel()
+        self.cleared.setWordWrap(True)
+        layout.addWidget(self.cleared)
+        self.policy = QComboBox()
+        if plan.needs_missing_policy or plan.identity_conflict:
+            message = QLabel(
+                "Обнаружена смена клиента. Старые персональные поля и отсутствующие стороны фотографий будут очищены."
+                if plan.identity_conflict
+                else "В исходном договоре есть значения или фотографии, которые не удалось обновить. Проверьте, относятся ли они к текущему клиенту."
+            )
+            message.setWordWrap(True)
+            layout.addWidget(message)
+            if not plan.identity_conflict:
+                self.policy.addItem("Выберите действие с прежними данными…", None)
+                self.policy.addItem(
+                    "Сохранить прежние значения — тот же клиент", MissingValuePolicy.PRESERVE_EXISTING
+                )
+            self.policy.addItem(
+                "Очистить старые персональные поля и отсутствующие фото — новый клиент",
+                MissingValuePolicy.CLEAR_OLD_PERSONAL,
+            )
+            layout.addWidget(self.policy)
+        else:
+            self.policy.addItem("Пустые поля останутся пустыми", MissingValuePolicy.PRESERVE_EXISTING)
+            self.policy.hide()
+        if plan.photos:
+            count = len(plan.photos.insertions)
+            text = f"Фотографии: будет добавлено {count}."
+            if count < 2:
+                text += " Одна или обе стороны не обновлены."
+            if plan.photos.missing_names:
+                text += " Прежние изображения: " + ", ".join(dict.fromkeys(plan.photos.missing_names)) + "."
+            label = QLabel(text)
+            label.setWordWrap(True)
+            layout.addWidget(label)
+            from PySide6.QtGui import QPixmap
+
+            row = QHBoxLayout()
+            for photo in plan.photos.insertions:
+                image = QLabel()
+                pixmap = QPixmap()
+                pixmap.loadFromData(photo.data)
+                image.setPixmap(
+                    pixmap.scaled(
+                        190,
+                        115,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+                row.addWidget(image)
+            layout.addLayout(row)
+            if plan.photos.previous_images:
+                label = QLabel("Рисунки в исходном договоре (проверьте, что это фотографии паспорта):")
+                label.setWordWrap(True)
+                layout.addWidget(label)
+                row = QHBoxLayout()
+                for side, data in plan.photos.previous_images:
+                    column = QVBoxLayout()
+                    column.addWidget(QLabel(side))
+                    image = QLabel("Просмотр недоступен — проверьте рисунок в Excel")
+                    image.setWordWrap(True)
+                    pixmap = QPixmap()
+                    if pixmap.loadFromData(data):
+                        image.setPixmap(pixmap.scaled(150, 90, Qt.AspectRatioMode.KeepAspectRatio))
+                    column.addWidget(image)
+                    row.addLayout(column)
+                layout.addLayout(row)
+            if plan.photos.conflicts:
+                label = QLabel(
+                    "Прежние фотографии в разрешённых областях будут заменены показанными снимками."
+                )
+                label.setWordWrap(True)
+                layout.addWidget(label)
+        else:
+            label = QLabel("В этом договоре область фотографий не настроена; изображения не обновятся.")
+            label.setWordWrap(True)
+            layout.addWidget(label)
+        if not plan.changes:
+            label = QLabel(
+                "Новых паспортных данных нет. Выбранный документ сохранится без обновления этих полей."
+                if in_place
+                else "Паспортные данные пока не обновлены. Можно сохранить отдельную копию исходного файла."
+            )
+            label.setWordWrap(True)
+            layout.addWidget(label)
+        self.filename = QLineEdit(self.suggested.name, self)
+        self.folder = QLineEdit(str(self.suggested.parent), self)
+        if in_place:
+            location = QLabel(
+                "Будет обновлён выбранный файл:\n" + str(plan.source) + "\nНовое имя: " + self.suggested.name
+            )
+            location.setTextFormat(Qt.TextFormat.PlainText)
+            location.setWordWrap(True)
+            layout.addWidget(location)
+            self.filename.hide()
+            self.folder.hide()
+        else:
+            form = QFormLayout()
+            form.addRow("Название", self.filename)
+            folder_row = QHBoxLayout()
+            folder_row.addWidget(self.folder, 1)
+            browse = QPushButton("Выбрать папку")
+            browse.clicked.connect(self.browse)
+            folder_row.addWidget(browse)
+            form.addRow("Папка", folder_row)
+            layout.addLayout(form)
+        if not in_place and self.suggested.name.startswith("Договор - "):
+            label = QLabel("ФИО не найдено. Предложено нейтральное название; его можно изменить.")
+            label.setWordWrap(True)
+            layout.addWidget(label)
+        self.problem = QLabel()
+        self.problem.setWordWrap(True)
+        layout.addWidget(self.problem)
+        label = QLabel(
+            "Инструменты, цены, залог, оформление и формулы сохранятся. Тот же файл будет переименован по ФИО и дате. Папка останется прежней."
+            if in_place
+            else "Инструменты, цены, залог, оформление и формулы сохранятся. Исходный файл останется на месте."
+        )
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        box = buttons(self, outer, "Сохранить изменения" if in_place else "Сохранить копию")
+        box.button(QDialogButtonBox.StandardButton.Cancel).setText("Назад")
+        self.save_button = box.button(QDialogButtonBox.StandardButton.Save)
+        self.policy.currentIndexChanged.connect(self.update_save)
+        self.filename.textChanged.connect(self.update_save)
+        self.folder.textChanged.connect(self.update_save)
+        self.update_save()
+
+    def browse(self):
+        folder = QFileDialog.getExistingDirectory(self, "Папка для копии договора", self.folder.text())
+        if folder:
+            self.folder.setText(folder)
+
+    def update_save(self):
+        import re
+
+        name = self.filename.text().strip()
+        policy = self.policy.currentData()
+        problem = ""
+        if policy is None:
+            problem = "Выберите одно общее действие с прежними данными."
+        elif policy == MissingValuePolicy.CLEAR_OLD_PERSONAL and self.plan.formula_clear_errors:
+            problem = "Старые данные связаны с формулой. Скорректируйте расположение полей перед очисткой."
+        elif not self.in_place and (
+            not name
+            or name.rstrip(" .") != name
+            or re.search(r'[<>:"/\\|?*\x00-\x1f]', name)
+            or re.fullmatch(r"(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?", name)
+        ):
+            problem = "Укажите название без символов пути и запрещённых знаков."
+        elif not self.in_place and not self.folder.text().strip():
+            problem = "Укажите папку для новой копии."
+        self.problem.setText(problem)
+        self.save_button.setEnabled(not problem)
+        cleared = [
+            FIELD_LABELS.get(c.field_name.split(".")[0], "Телефоны")
+            for c in self.plan.changes
+            if c.new is None
+        ]
+        if policy == MissingValuePolicy.CLEAR_OLD_PERSONAL:
+            cleared.extend(
+                c.source
+                for c in self.plan.preserved
+                if not (isinstance(c.old, str) and c.old.startswith("="))
+            )
+        cleared = list(dict.fromkeys(cleared))
+        self.cleared.setText("Будут очищены прежние значения: " + ", ".join(cleared) if cleared else "")
+        self.cleared.setVisible(bool(cleared))
+        count = len({c.field_name.split(".")[0] for c in self.plan.changes if c.new is not None})
+        self.summary.setText(
+            f"Обновится: {count} полей. Без новых данных: {len(self.plan.warnings.missing_fields)}.\n"
+            + (
+                "Вы можете вернуться и исправить значения или обновить выбранный документ."
+                if self.in_place
+                else "Вы можете вернуться и исправить значения или сохранить копию."
+            )
+        )
+
+    def accept(self):
+        from pathlib import Path
+
+        if not self.save_button.isEnabled():
+            return
+        self.plan.select_missing_policy(self.policy.currentData())
+        self.plan.image_replace_confirmed = True
+        if self.in_place:
+            self.target = self.suggested
+            self.automatic_name = False
+            super().accept()
+            return
+        name = self.filename.text().strip()
+        if not name.lower().endswith(".xlsx"):
+            name += ".xlsx"
+        self.automatic_name = name == self.suggested.name
+        self.target = Path(self.folder.text().strip()) / name
+        super().accept()
 
 
 class ContractDialog(QDialog):

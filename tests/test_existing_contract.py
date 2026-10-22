@@ -17,6 +17,7 @@ from document_excel.domain.models import (
     DocumentSide,
     FieldEvidence,
     FieldStatus,
+    MissingValuePolicy,
     RegistrationStatus,
     SourceImage,
     ToolItem,
@@ -106,6 +107,8 @@ def approve(plan):
     plan.image_replace_confirmed = True
     plan.clear_missing_confirmed = True
     plan.preserved_confirmed = True
+    if plan.best_effort:
+        plan.select_missing_policy(MissingValuePolicy.CLEAR_OLD_PERSONAL if plan.identity_conflict else MissingValuePolicy.PRESERVE_EXISTING)
     return plan
 
 
@@ -450,9 +453,8 @@ def test_filename_uses_clock_at_each_save_and_safe_name(tmp_path):
 
 
 @pytest.mark.parametrize("name", ["", "  ", "00000000000000", "<>/\\"])
-def test_empty_filename_is_rejected(name):
-    with pytest.raises(AppError):
-        ContractFilenameGenerator().generate(name)
+def test_empty_filename_uses_neutral_fallback(name):
+    assert ContractFilenameGenerator(lambda: date(2026, 10, 20)).generate(name) == "Договор - 20.10.2026.xlsx"
 
 
 @pytest.mark.parametrize(
@@ -493,7 +495,7 @@ def test_gui_contract_passport_review_save_without_advanced_settings(
     from document_excel.infrastructure.storage import SettingsRepository
     from document_excel.presentation import case_actions
     from document_excel.presentation.components import ConfirmDialog
-    from document_excel.presentation.dialogs import ExportDialog
+    from document_excel.presentation.dialogs import CopySaveDialog
     from document_excel.presentation.main_window import MainWindow
 
     source, synthetic, _ = filled_contract
@@ -564,28 +566,21 @@ def test_gui_contract_passport_review_save_without_advanced_settings(
     assert window.review_form.fields["full_name"].editor.text() == "Иванов Иван Иванович"
     monkeypatch.setattr(ConfirmDialog, "ask", lambda *args: True)
 
-    def accept_export(dialog):
-        dialog.confirm.setChecked(True)
-        dialog.image_confirm.setChecked(True)
-        dialog.clear_confirm.setChecked(True)
-        dialog.preserved_confirm.setChecked(True)
-        dialog.accept()
-        return QDialog.DialogCode.Accepted
-
-    monkeypatch.setattr(ExportDialog, "exec", accept_export)
     today = [date(2026, 10, 19)]
     window.excel_actions.filenames.clock = lambda: today[0]
 
-    def choose_output(*args):
-        today[0] = date(2026, 10, 20)  # Midnight while the save picker is open.
-        return (args[2], "")
+    def accept_export(dialog):
+        today[0] = date(2026, 10, 20)  # Midnight while reviewing the copy.
+        dialog.accept()
+        return QDialog.DialogCode.Accepted
 
-    monkeypatch.setattr(QFileDialog, "getSaveFileName", choose_output)
+    monkeypatch.setattr(CopySaveDialog, "exec", accept_export)
     window.primary_button.click()
     qtbot.waitUntil(lambda: case.output_path is not None or bool(errors), timeout=15000)
     qtbot.waitUntil(lambda: not window.background_workers, timeout=10000)
     assert not errors
-    assert case.output_path.name == "Иванов Иван Иванович - 20.10.2026.xlsx"
+    assert case.output_path.name == "Иванов Иван Иванович 20.10.2026.xlsx"
+    assert case.template_path == case.output_path and not source.exists()
     qtbot.waitUntil(lambda: window.current_step == 4, timeout=3000)
     window.case_actions.new_case()
     assert not window.current_case.images and not window.current_case.data.full_name
@@ -633,7 +628,7 @@ def test_delete_last_client_keeps_existing_contract_mode(qtbot, tmp_path, monkey
     monkeypatch.setattr(QInputDialog, "getItem", lambda *args: ("Удалить запись из памяти", True))
     monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
     window.case_actions.manage_case()
-    assert window.current_case.workflow_mode == WorkflowMode.EXISTING_CONTRACT
+    assert window.current_case.workflow_mode == WorkflowMode.BEST_EFFORT_UPDATE
     assert not window.current_case.template_path and not window.can_recognize()
 
 
@@ -660,9 +655,11 @@ def test_queue_checks_each_clients_own_profile(filled_contract, qtbot, tmp_path,
 
 
 @pytest.mark.skipif(not Path("assets/lermontov.xlsx").exists(), reason="Local supplied workbook")
-def test_supplied_filled_contract_preserves_all_commercial_worksheets(filled_contract, tmp_path):
+@pytest.mark.parametrize("mode", [WorkflowMode.EXISTING_CONTRACT, WorkflowMode.BEST_EFFORT_UPDATE])
+def test_supplied_filled_contract_preserves_all_commercial_worksheets(filled_contract, tmp_path, mode):
     source = Path("assets/lermontov.xlsx").resolve()
     _, case, profile = filled_contract
+    case.workflow_mode = mode
     service = WorkbookService()
     _, profile = service.describe(source, profile, strict=True)
     case.template_path = source

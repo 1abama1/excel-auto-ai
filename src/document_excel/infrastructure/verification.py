@@ -19,6 +19,7 @@ from document_excel.domain.models import (
     DocumentSide,
     RegistrationStatus,
     SourceImage,
+    WorkflowMode,
     split_document_identifier,
 )
 from document_excel.infrastructure.excel import WorkbookService, legacy_profile
@@ -53,7 +54,7 @@ def run_self_test(directory: Path) -> dict[str, object]:
     output = RecognitionService(Settings(languages=["eng"], preprocessing="original")).run(
         [source], threading.Event(), lambda *_args: None
     )
-    case = ClientCase(images=[source])
+    case = ClientCase(workflow_mode=WorkflowMode.TEMPLATE_GENERATION, images=[source])
     apply_candidates(case, output.candidates, output.document_type, output.label_seen)
     expected = {
         "full_name": "SYNTHETIC TEST",

@@ -23,7 +23,7 @@ class ContractFilenameGenerator:
     def generate(self, name: str, *, preserve: bool = False, pattern: str = DEFAULT_FILENAME_PATTERN) -> str:
         name = PersonNameFormatter.format(name, preserve=preserve)
         if not name or not any(c.isalpha() for c in name):
-            raise AppError("Для имени файла заполните и подтвердите ФИО клиента.")
+            name = "Договор"
         try:
             if len(pattern) > 100:
                 raise ValueError
@@ -43,11 +43,11 @@ class ContractFilenameGenerator:
         return text + ".xlsx"
 
     @staticmethod
-    def available(path: Path) -> Path:
+    def available(path: Path, *, current: Path | None = None) -> Path:
         """Suggestion only. os.link still arbitrates concurrent publications."""
         candidate = path
         number = 2
-        while candidate.exists():
+        while candidate.exists() and (current is None or candidate.resolve() != current.resolve()):
             candidate = path.with_name(f"{path.stem} ({number}){path.suffix}")
             number += 1
         return candidate

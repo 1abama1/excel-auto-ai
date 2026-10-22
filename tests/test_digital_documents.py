@@ -301,7 +301,9 @@ def test_pending_identity_has_a_readonly_preview_but_no_live_merge_or_export(tmp
         path = tmp_path / (name + ".png")
         path.write_bytes(name.encode())
         files.append(SourceImage(id=name, path=path))
-    case = ClientCase(images=files)
+    from document_excel.domain.models import WorkflowMode
+
+    case = ClientCase(workflow_mode=WorkflowMode.EXISTING_CONTRACT, images=files)
     case.data.document_type = "kg_digital_id"
     case.document_type_manual = True
     _, candidates = resolve(front(), back())
@@ -319,7 +321,12 @@ def test_pending_identity_has_a_readonly_preview_but_no_live_merge_or_export(tmp
 @pytest.mark.parametrize("change", ["profile", "bytes", "client_run"])
 def test_pending_preview_cannot_publish_stale_input(tmp_path, change):
     paths, _ = synthetic_digital_images(tmp_path)
-    case = ClientCase(images=[SourceImage(id="front", path=paths[0]), SourceImage(id="back", path=paths[1])])
+    from document_excel.domain.models import WorkflowMode
+
+    case = ClientCase(
+        workflow_mode=WorkflowMode.EXISTING_CONTRACT,
+        images=[SourceImage(id="front", path=paths[0]), SourceImage(id="back", path=paths[1])],
+    )
     case.data.document_type = "kg_digital_id"
     case.document_type_manual = True
     _, candidates = resolve(front(), back())

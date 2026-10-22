@@ -81,6 +81,7 @@ def build_ui(w) -> None:
     root_row.setContentsMargins(0, 0, 0, 0)
     root_row.setSpacing(0)
     _sidebar(w, root_row)
+    w.sidebar.hide()
     w.pages = QStackedWidget()
     root_row.addWidget(w.pages, 1)
     _workflow(w)
@@ -159,17 +160,23 @@ def _workflow(w) -> None:
     headings.addWidget(w.subtitle_label)
     header.addLayout(headings, 1)
     w.case_title = _label("Клиент 1", "caseTitle")
-    header.addWidget(w.case_title)
-    help_button = IconButton("info", "Помощь и диагностика")
+    w.case_title.hide()
+    help_button = IconButton("settings", "Настройки и дополнительные действия")
     help_menu = QMenu(help_button)
     help_menu.addAction(
         "Как подготовить договор",
         lambda: w.message(
-            "Добавьте обе стороны документа, распознайте текст и проверьте данные. "
-            "Сначала выберите готовый договор Excel. После проверки данных создайте новую копию."
+            "Выберите Excel, добавьте одну или две фотографии и распознайте текст. "
+            "Сначала выберите готовый договор Excel. После проверки данных сохраните изменения в выбранный файл."
         ),
     )
+    help_menu.addAction("Расположение полей Excel", w.excel_actions.edit_mapping)
+    help_menu.addAction("Профили Excel", lambda: w.navigate(1))
+    help_menu.addAction("Настройки", w.show_settings)
     help_menu.addAction("Диагностика OCR", w.show_diagnostics)
+    help_menu.addAction("Очередь клиентов", lambda: w.navigate(3))
+    help_menu.addAction("История", lambda: w.navigate(2))
+    help_menu.addAction("Новый документ", w.case_actions.new_case)
     help_button.setMenu(help_menu)
     header.addWidget(help_button)
     box.addLayout(header)
@@ -197,6 +204,7 @@ def _workflow(w) -> None:
     footer_row.addWidget(w.back_button)
     w.footer_note = _label("Шаг 1 из 5 · Добавьте фотографии", "caption", True)
     footer_row.addWidget(w.footer_note, 1)
+    footer_row.addWidget(w.skip_ocr_button)
     w.primary_button = PrimaryButton("Распознать паспорт", w.primary_action)
     w.primary_button.setMinimumWidth(214)
     footer_row.addWidget(w.primary_button)
@@ -214,7 +222,12 @@ def _upload(w) -> None:
     box = QVBoxLayout(content)
     box.setContentsMargins(0, 0, 0, 0)
     box.setSpacing(16)
-    contract = DocumentCard("Договор Excel")
+    contract = EmptyState("Договор Excel", "Выберите готовый Excel-договор или перетащите его сюда")
+    contract.illustration.hide()
+    contract.setMinimumHeight(170)
+    contract.files_dropped.connect(w.handle_dropped_files)
+    contract.box = contract.layout()
+    w.contract_dropzone = contract
     contract.box.setContentsMargins(18, 12, 18, 12)
     contract.box.setSpacing(6)
     w.contract_name = _label("Выберите договор Excel", "templateName", True)
@@ -222,9 +235,7 @@ def _upload(w) -> None:
     contract.box.addWidget(w.contract_name)
     contract.box.addWidget(w.contract_status)
     row = QHBoxLayout()
-    w.contract_button = SecondaryButton(
-        "Выбрать / заменить договор", w.excel_actions.choose_template, "folder"
-    )
+    w.contract_button = SecondaryButton("Выбрать Excel", w.excel_actions.choose_template, "folder")
     row.addWidget(w.contract_button)
     advanced = SecondaryButton("Дополнительно")
     menu = QMenu(advanced)
@@ -237,11 +248,11 @@ def _upload(w) -> None:
     contract.box.addLayout(row)
     box.addWidget(contract)
     w.dropzone = EmptyState(
-        "Паспорт клиента", "Добавьте лицевую и оборотную стороны или перетащите обе фотографии сюда"
+        "Паспорт клиента", "Добавьте одну или две стороны. Можно перетащить несколько фотографий"
     )
     w.dropzone.layout().setContentsMargins(16, 12, 16, 12)
     w.dropzone.illustration.hide()
-    w.dropzone.files_dropped.connect(w.case_actions.add_images)
+    w.dropzone.files_dropped.connect(w.handle_dropped_files)
     w.add_button = SecondaryButton("Выбрать фотографии", w.case_actions.choose_images, "plus")
     w.add_button.setToolTip("Открыть фотографии · Ctrl+O")
     w.folder_button = SecondaryButton("Выбрать папку", w.case_actions.choose_folder, "folder")
@@ -270,9 +281,7 @@ def _upload(w) -> None:
             )
         )
         w.dropzone.actions.addWidget(card)
-    w.formats_label = _label(
-        "JPG, PNG, WEBP, BMP, TIFF · Можно добавить обе стороны удостоверения", "caption", True
-    )
+    w.formats_label = _label("JPG, PNG, WEBP, BMP, TIFF · Одна сторона тоже подходит", "caption", True)
     w.formats_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
     w.dropzone.layout().addWidget(w.formats_label)
     other = SecondaryButton("Другие фотографии и папка")
@@ -282,9 +291,7 @@ def _upload(w) -> None:
     other.setMenu(other_menu)
     w.dropzone.layout().addWidget(other, 0, Qt.AlignmentFlag.AlignRight)
     box.addWidget(w.dropzone, 1)
-    w.upload_summary = _label(
-        "Лицевая и оборотная стороны одного человека — одна запись клиента", "caption", True
-    )
+    w.upload_summary = _label("Если каких-то данных нет, вы сможете продолжить сохранение", "caption", True)
     box.addWidget(w.upload_summary)
     w.upload_document_type = QComboBox()
     for label, value in [
@@ -296,7 +303,7 @@ def _upload(w) -> None:
     ]:
         w.upload_document_type.addItem(label, value)
     w.upload_document_type.currentIndexChanged.connect(w.case_actions.change_document_type)
-    box.addWidget(w.upload_document_type)
+    w.upload_document_type.hide()
     w.thumbnail_scroll = QScrollArea()
     w.thumbnail_scroll.setObjectName("thumbnailScroll")
     w.thumbnail_scroll.setWidgetResizable(True)
@@ -311,6 +318,7 @@ def _upload(w) -> None:
     w.thumbnail_scroll.setWidget(thumbnails)
     w.thumbnail_scroll.hide()
     box.addWidget(w.thumbnail_scroll)
+    w.skip_ocr_button = SecondaryButton("Продолжить без распознавания", lambda: w.go_step(2))
     w.step_stack.addWidget(page)
 
 
@@ -329,6 +337,8 @@ def _recognition(w) -> None:
     w.substage_label = card.stage
     w.progress = card.progress
     w.loading_details = card.details
+    w.loading_details.hide()
+    w.substage_label.hide()
     cancel_row = QHBoxLayout()
     cancel_row.addStretch()
     w.cancel_button = SecondaryButton("Отменить распознавание", w.cancel_work)
@@ -350,7 +360,7 @@ def _review(w) -> None:
     summary_row = QHBoxLayout()
     w.review_summary = _label("Данные извлечены. Проверьте выделенные поля.", "reviewSummary", True)
     summary_row.addWidget(w.review_summary, 1)
-    w.issues_button = SecondaryButton("Показать ошибки", w.show_first_issue)
+    w.issues_button = SecondaryButton("Ненайденные поля", w.show_missing_fields)
     w.issues_button.setObjectName("textButton")
     summary_row.addWidget(w.issues_button)
     box.addLayout(summary_row)
@@ -456,7 +466,7 @@ def _review(w) -> None:
     w.side_review_button.hide()
     heading.addWidget(w.side_review_button)
     w.registration_notice = _label(
-        "На удостоверении нет адреса регистрации. Укажите прописку для договора.", "caption", True
+        "Регистрация не найдена. Можно ввести её вручную или продолжить без неё.", "caption", True
     )
     w.registration_notice.hide()
     heading.addWidget(w.registration_notice)
@@ -483,8 +493,6 @@ def _review(w) -> None:
     menu = QMenu(more)
     menu.addAction("Исходный текст OCR", w.show_raw_ocr)
     menu.addAction("Проверка машиночитаемой зоны", w.case_actions.show_mrz)
-    menu.addAction("Инструменты и договор", w.case_actions.contract_dialog)
-    menu.addAction("Проверить фотографии в договоре", lambda: w.go_step(3))
     menu.addAction("Распознать ещё раз", w.case_actions.start_ocr)
     menu.addAction("Сохранить копии фото", w.excel_actions.save_photos)
     more.setMenu(menu)
@@ -559,16 +567,23 @@ def _success(w) -> None:
     mark.setPixmap(icon("success", "#15803D", 64).pixmap(64, 64))
     mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
     box.addWidget(mark)
-    title = _label("Договор успешно создан", "title")
+    title = _label("Договор сохранён", "title")
     title.setAlignment(Qt.AlignmentFlag.AlignCenter)
     box.addWidget(title)
     w.result_label = _label("", "resultPath", True)
     w.result_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
     w.result_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
     box.addWidget(w.result_label)
+    w.result_summary = _label("", "reviewSummary", True)
+    w.result_summary.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    box.addWidget(w.result_summary)
+    w.result_missing = QPushButton("Показать пропущенные поля")
+    w.result_missing.setObjectName("textButton")
+    w.result_missing.clicked.connect(w.show_missing_fields)
+    box.addWidget(w.result_missing)
     actions = QHBoxLayout()
     actions.addStretch()
-    w.open_result_button = SecondaryButton("Открыть Excel", w.excel_actions.open_result, "document")
+    w.open_result_button = SecondaryButton("Открыть договор", w.excel_actions.open_result, "document")
     w.open_folder_button = SecondaryButton("Открыть папку", w.excel_actions.open_result_folder, "folder")
     actions.addWidget(w.open_result_button)
     actions.addWidget(w.open_folder_button)
@@ -605,6 +620,7 @@ def _templates(w) -> None:
         _label("Демонстрационный файл предназначен для проверки работы приложения.", "caption", True)
     )
     box.addStretch()
+    box.insertWidget(0, SecondaryButton("Вернуться к документу", lambda: w.navigate(0)))
     w.pages.addWidget(page)
 
 
@@ -620,6 +636,7 @@ def _history(w) -> None:
     row.addStretch()
     row.addWidget(SecondaryButton("Очистить историю", w.clear_history))
     box.addLayout(row)
+    box.insertWidget(0, SecondaryButton("Вернуться к документу", lambda: w.navigate(0)))
     w.pages.addWidget(page)
 
 
@@ -650,6 +667,7 @@ def _queue(w) -> None:
     w.queue_table.cellClicked.connect(lambda row, _column: _select_queue_case(w, row))
     w.queue_table.cellDoubleClicked.connect(lambda row, _column: _open_case(w, row))
     box.addWidget(w.queue_table, 1)
+    box.insertWidget(0, SecondaryButton("Вернуться к документу", lambda: w.navigate(0)))
     w.pages.addWidget(page)
 
 

@@ -54,8 +54,19 @@ class DocumentType(StrEnum):
 
 
 class WorkflowMode(StrEnum):
+    BEST_EFFORT_UPDATE = "BEST_EFFORT_UPDATE"
     EXISTING_CONTRACT = "EXISTING_CONTRACT"
     TEMPLATE_GENERATION = "TEMPLATE_GENERATION"
+
+    @property
+    def updates_existing(self) -> bool:
+        return self != WorkflowMode.TEMPLATE_GENERATION
+
+
+class MissingValuePolicy(StrEnum):
+    LEAVE_EMPTY = "leave_empty"
+    PRESERVE_EXISTING = "preserve_existing"
+    CLEAR_OLD_PERSONAL = "clear_old_personal"
 
 
 class MRZReport(BaseModel):
@@ -267,11 +278,15 @@ class ClientCase(BaseModel):
     errors: list[str] = Field(default_factory=list)
     confirmed_digest: str | None = None
     template_path: Path | None = None
-    # Legacy service callers retain template generation; desktop creates cases
-    # explicitly in EXISTING_CONTRACT mode.
-    workflow_mode: WorkflowMode = WorkflowMode.TEMPLATE_GENERATION
+    # Legacy template generation remains explicitly selectable by service callers.
+    workflow_mode: WorkflowMode = WorkflowMode.BEST_EFFORT_UPDATE
     workbook_profile: dict[str, Any] | None = None
     output_path: Path | None = None
+    missing_value_policy: MissingValuePolicy | None = None
+    updated_fields: list[str] = Field(default_factory=list)
+    missing_fields: list[str] = Field(default_factory=list)
+    cleared_fields: list[str] = Field(default_factory=list)
+    unchanged_fields: list[str] = Field(default_factory=list)
     photo_exception: bool = False
     document_type_manual: bool = False
     mrz_reports: dict[str, MRZReport] = Field(default_factory=dict, repr=False)
@@ -290,9 +305,7 @@ class ClientCase(BaseModel):
     def digest(self) -> str:
         payload = [
             self.workflow_mode.value,
-            str(self.template_path)
-            if self.template_path and self.workflow_mode == WorkflowMode.EXISTING_CONTRACT
-            else None,
+            str(self.template_path) if self.template_path and self.workflow_mode.updates_existing else None,
             self.workbook_profile,
             self.formatted_name,
             self.data.model_dump(mode="json"),
@@ -316,7 +329,7 @@ class ClientCase(BaseModel):
             return PersonNameFormatter.format(self.data.full_name, preserve=True)
         parts = [self.data.surname, self.data.first_name, self.data.patronymic]
         composed = " ".join(p for p in parts if p)
-        if composed and composed == self.data.full_name:
+        if composed and (composed == self.data.full_name or not self.data.full_name):
             return " ".join(
                 PersonNameFormatter.format(
                     value,
